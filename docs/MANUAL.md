@@ -14,6 +14,7 @@
 | 微博 | `weibo` | ✅ | 微博 | ❌ | ✅ | ✅ | m.weibo.cn + PC ajax | [nghuyong/WeiboSpider](https://github.com/nghuyong/WeiboSpider)（请求构造参考） |
 | 原神 | `genshin` | ✅ | 角色展柜 | ❌ | ❌ | ❌ | enka.network + 米游社绑定 | [Womsxd/YuanShen_User_Info](https://github.com/Womsxd/YuanShen_User_Info)（设计参考） |
 | 小红书 | `xhs` | ✅ | 笔记 | ❌ | ✅ | ❌ | PC 签名栈移植 | [cv-cat/Spider_XHS](https://github.com/cv-cat/Spider_XHS) |
+| GitHub | `github` | ✅ | 仓库 + Star | ❌ | ✅ | ✅ | GitHub REST API v3 自写 | 无 |
 
 所有平台统一实现 `base.py` 接口：`get_profile / search_user / get_content_lists /
 get_content_detail / get_history / get_events / get_follows / get_followers /
@@ -92,6 +93,13 @@ refresh_user_info / check_alive / get_login_user`。
 - 关注/粉丝接口需特殊权限，未实现。
 - UID 从主页 URL 提取：`https://www.xiaohongshu.com/user/profile/<24位十六进制>`。
 - Cookie 配置与各平台相同（面板粘贴或 `accounts.json`），无特殊步骤。
+
+### GitHub（github）
+
+- 基于 GitHub REST API v3（`api.github.com`）；兼容直接粘贴 Personal Access Token（`ghp_` / `github_pat_`）、`token=xxx` 或浏览器 Cookie，未配置凭证时也可按公开接口限额（60 次/小时）抓取，配置 Token 后限额提升至 5000 次/小时。
+- 支持用户名、`@username`、主页 URL 及数字 User ID 查询；用户不存在（404）`get_profile` 返回 `None`，速率超限（403/429）或无效 Token（401）直接上抛。
+- 内容列表合并公开自建/Fork 仓库（`is_owner=True`）与 Star 仓库（`is_owner=False`），点击卡片可查看仓库详情与最近 Commit 记录；仓库 `item_id` 以 `owner__repo` 编码规避路由斜杠冲突。
+- 动态解析 `/users/{username}/events/public`（Push / Star / Fork / PR / Issue / Release 等），关注与粉丝支持 `skip` 分页增量续拉。
 
 ## 4. 接入新平台
 

@@ -266,6 +266,49 @@ export const PLATFORMS: PlatformConfig[] = [
       return out;
     },
   },
+  {
+    id: "github",
+    name: "GitHub",
+    color: "#24292f",
+    searchPlaceholder: "输入用户名或关键词搜索，或输入 @username / 数字ID 直达",
+    uidHint: "支持 GitHub 用户名搜索，或输入 @username / 数字 ID 直接查询",
+    contentLabel: "仓库与 Star",
+    contentKind: "playlist",
+    hasDetail: true,
+    hasRecords: false,
+    hasEvents: true,
+    hasSocial: true,
+    looksLikeUid: (s) =>
+      /^\d+$/.test(s) ||
+      /^@[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(s),
+    resultUid: (u) => String(u.uid ?? ""),
+    itemLink: (it) =>
+      it.extra && it.extra.full_name
+        ? `https://github.com/${it.extra.full_name}`
+        : it.item_id
+          ? `https://github.com/${String(it.item_id).replace("__", "/")}`
+          : "",
+    vipLabel: (p) => (p.is_vip ? p.vip_label || "认证" : ""),
+    metaLine: (p) => {
+      const e = p.extra || {};
+      const out: string[] = [];
+      if (e.login) out.push(`@${e.login}`);
+      if (e.company) out.push(String(e.company));
+      if (p.location) out.push(p.location);
+      const join = fmtDate(p.join_time);
+      if (join) out.push(`${join} 加入`);
+      return out;
+    },
+    stats: (p) => {
+      const e = p.extra || {};
+      const out: Stat[] = [];
+      stat(out, "粉丝", e.followers ?? e.fan_count);
+      stat(out, "关注", e.following ?? e.follow_count);
+      stat(out, "公开仓库", e.public_repos);
+      stat(out, "Gists", e.public_gists);
+      return out;
+    },
+  },
 ];
 
 export const PLATFORM_MAP: Record<string, PlatformConfig> = Object.fromEntries(

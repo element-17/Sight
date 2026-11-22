@@ -72,12 +72,14 @@ export class GraphController {
     xhs: (n) => `https://www.xiaohongshu.com/user/profile/${n.uid}`,
     douyin: (n) =>
       n.sec_uid ? `https://www.douyin.com/user/${n.sec_uid}` : "",
+    github: (n) => `https://github.com/${n.uid}`,
   };
   SOCIAL_SUPPORT: Record<string, boolean> = {
     bilibili: true,
     netease: true,
     weibo: true,
     douyin: true,
+    github: true,
   };
   EXPAND_LIMIT_KEY = "graph_expand_limit";
   expandLimit = this.loadExpandLimit();

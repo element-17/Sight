@@ -26,7 +26,7 @@ ACCOUNTS_FILE = CREDENTIALS_DIR / "accounts.json"
 PRIMARY_ACCOUNT_ID = "primary"
 
 # 支持的平台
-PLATFORMS = ("netease", "bilibili", "douyin", "qqmusic", "weibo", "genshin", "xhs")
+PLATFORMS = ("netease", "bilibili", "douyin", "qqmusic", "weibo", "genshin", "xhs", "github")
 
 _PLATFORM_NAMES = {
     "netease": "网易云音乐",
@@ -36,6 +36,7 @@ _PLATFORM_NAMES = {
     "weibo": "微博",
     "genshin": "原神",
     "xhs": "小红书",
+    "github": "GitHub",
 }
 
 # accounts.json 的进程内读写锁（可重入：读-改-写整体串行，避免并发写坏文件；
@@ -100,12 +101,38 @@ class CredentialManager:
 
     @staticmethod
     def parse_cookie_str(raw: str) -> dict:
-        """解析 "k=v; k2=v2" 格式的 Cookie 字符串"""
+        """解析 "k=v; k2=v2" 格式的 Cookie 字符串；兼容直接粘贴 Personal Access Token / Bearer Token"""
         cookies = {}
-        for item in (raw or "").strip().split("; "):
-            if "=" in item:
+        raw_str = (raw or "").strip()
+        if not raw_str:
+            return cookies
+        for item in raw_str.split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            lower = item.lower()
+            if lower.startswith(("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_", "bearer ", "token ")):
+                token_val = item
+                if lower.startswith("bearer "):
+                    token_val = item[7:].strip()
+                elif lower.startswith("token "):
+                    token_val = item[6:].strip()
+                if token_val:
+                    cookies["token"] = token_val
+            elif "=" in item:
                 key, value = item.split("=", 1)
-                cookies[key] = value
+                key = key.strip()
+                value = value.strip()
+                if key.lower() == "authorization":
+                    if value.lower().startswith("bearer "):
+                        value = value[7:].strip()
+                    elif value.lower().startswith("token "):
+                        value = value[6:].strip()
+                    cookies["token"] = value
+                elif key:
+                    cookies[key] = value
+            else:
+                cookies["token"] = item
         return cookies
 
     @classmethod

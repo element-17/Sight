@@ -7,6 +7,7 @@
     python run.py
     然后访问 http://127.0.0.1:5000
 """
+import os
 from app import create_app
 from app.config import (
     FLASK_HOST,
@@ -19,8 +20,8 @@ from app.platforms import get_adapter, list_platforms
 from app.credentials import CredentialManager
 
 
-def main():
-    """启动前检查 + 启动服务器"""
+def _startup_check():
+    """启动前检查各平台连接"""
     print("=" * 58)
     print("  📊  多平台用户数据监控面板")
     print("=" * 58)
@@ -39,7 +40,9 @@ def main():
                     else:
                         print(f"  ✓ {p['name']}: 已连接")
                 else:
-                    print(f"  ⚠ {p['name']}: 凭证已配置但未通过验证")
+                    reason = getattr(adapter, "_init_error", "") if adapter else ""
+                    suffix = f"（{reason}）" if reason else ""
+                    print(f"  ⚠ {p['name']}: 凭证已配置但未通过验证{suffix}")
             except Exception as e:
                 print(f"  ⚠ {p['name']}: {e}")
         else:
@@ -58,6 +61,13 @@ def main():
 
     print(f"  ✓ 面板地址: http://{FLASK_HOST}:{FLASK_PORT}")
     print("=" * 58)
+
+
+def main():
+    """启动前检查 + 启动服务器"""
+    # Flask debug 模式下 reloader 会启动父子两个进程，仅在实际服务进程执行一次启动探测
+    if not FLASK_DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        _startup_check()
 
     app = create_app()
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)

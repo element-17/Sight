@@ -99,6 +99,8 @@ class TimelineEntry:
 class TimelineBuilder:
     """多平台活动时间线构建器"""
 
+    SNAPSHOT_TTL = 30 * 60  # 快照有效期（30 分钟），过期快照不再用于实时时间线
+
     PLATFORM_NAME_MAP = {
         "netease": "网易云音乐",
         "bilibili": "哔哩哔哩",
@@ -106,6 +108,8 @@ class TimelineBuilder:
         "qqmusic": "QQ音乐",
         "weibo": "微博",
         "genshin": "原神",
+        "xhs": "小红书",
+        "github": "GitHub",
     }
 
     # 各平台内容类型标签
@@ -116,7 +120,26 @@ class TimelineBuilder:
         "qqmusic": "歌单",
         "weibo": "微博",
         "genshin": "角色",
+        "xhs": "笔记",
+        "github": "仓库",
     }
+
+    @classmethod
+    def _is_fresh_snapshot(cls, snap: dict) -> bool:
+        """检查快照是否在 SNAPSHOT_TTL (30 分钟) 有效期内且非占位标记"""
+        if not isinstance(snap, dict) or snap.get("_marker"):
+            return False
+        ts = snap.get("_snapshot_time")
+        if not ts:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(ts))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=CST)
+            age = max(0.0, (datetime.now(CST) - dt).total_seconds())
+            return age < cls.SNAPSHOT_TTL
+        except (ValueError, TypeError, OSError):
+            return False
 
     @classmethod
     def build(
@@ -129,6 +152,8 @@ class TimelineBuilder:
         构建统一时间线。
         对听歌记录使用快照对比推断时间。
         """
+        from app.credentials import CredentialManager
+
         entries: list[TimelineEntry] = []
         if store is None:
             store = DataStore()
@@ -141,6 +166,11 @@ class TimelineBuilder:
             if not adapter:
                 continue
 
+            # 若该平台已配置 Cookie 但当前登录态已失效，跳过旧快照与变化推断，防止展示过期缓存
+            if CredentialManager.load_cookies(platform_id) and not adapter.check_alive():
+                print(f"[Timeline] {platform_id}:{uid} 凭证已失效，跳过该平台时间线构建")
+                continue
+
             pname = cls.PLATFORM_NAME_MAP.get(platform_id, platform_id)
             content_label = cls.CONTENT_TYPE_MAP.get(platform_id, "内容")
             platform_count = 0  # 该平台添加到时间线的条目数
@@ -150,11 +180,11 @@ class TimelineBuilder:
                 print(f"[Timeline] douyin: 跳过动态（由内容列表代替）")
             else:
                 try:
-                    all_event_snaps = store.get_snapshots(platform_id, uid, "events", limit=2)
+                    all_event_snaps = store.get_snapshots(platform_id, uid, "events", limit=5)
                     print(f"[Timeline] {platform_id}:{uid} events 快照数={len(all_event_snaps)}")
                     events_snap = None
                     for snap in all_event_snaps:
-                        if snap.get("items"):
+                        if cls._is_fresh_snapshot(snap) and snap.get("items"):
                             events_snap = snap
                             break
 
@@ -214,13 +244,13 @@ class TimelineBuilder:
                 except Exception as e:
                     print(f"[Timeline] {platform_id} 动态获取失败: {e}")
 
-            # ---- 内容发布（歌单/视频/作品）：从快照读取，无快照时实时拉取 ----
+            # ---- 内容发布（歌单/视频/作品）：从 30 分钟内的新鲜快照读取，过期或无快照时实时拉取 ----
             try:
-                all_content_snaps = store.get_snapshots(platform_id, uid, "playlists", limit=2)
+                all_content_snaps = store.get_snapshots(platform_id, uid, "playlists", limit=5)
                 print(f"[Timeline] {platform_id}:{uid} playlists 快照数={len(all_content_snaps)}")
                 content_snap = None
                 for snap in all_content_snaps:
-                    if snap.get("items"):
+                    if cls._is_fresh_snapshot(snap) and snap.get("items"):
                         content_snap = snap
                         break
 
@@ -521,11 +551,14 @@ class TimelineBuilder:
     @classmethod
     def _playlist_action(cls, platform: str, change_type: str, is_owner: bool) -> str:
         """按平台定制内容变化的动作描述"""
-        verbs = {"netease": "歌单", "bilibili": "视频", "douyin": "作品"}
+        verbs = {"netease": "歌单", "bilibili": "视频", "douyin": "作品", "xhs": "笔记", "github": "仓库"}
         noun = verbs.get(platform, "")
         if change_type == "removed_playlist":
             return ("移除了歌单" if platform == "netease" else
+                    "取消 Star 或移除了仓库" if platform == "github" else
                     f"删除了{noun}" if noun else "删除了")
+        if platform == "github":
+            return "创建了仓库" if is_owner else "Star 了仓库"
         return (f"{'创建了' if is_owner else '收藏了'}歌单" if platform == "netease"
                 else f"{'发布了' if is_owner else '收藏了'}{noun}" if noun else "新增了")
 
@@ -636,7 +669,7 @@ class TimelineBuilder:
         now = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
         lines = ["# 📊 多平台活动时间线", "", f"生成时间: {now}", ""]
         for entry in entries:
-            icon = {"netease": "🎵", "bilibili": "📺", "douyin": "🎶", "qqmusic": "🎵", "weibo": "💬", "genshin": "⚔️"}.get(entry.platform, "📌")
+            icon = {"netease": "🎵", "bilibili": "📺", "douyin": "🎶", "qqmusic": "🎵", "weibo": "💬", "genshin": "⚔️", "xhs": "📕", "github": "🐙"}.get(entry.platform, "📌")
             if entry.time_str:
                 time_part = f"**{entry.time_str}**"
             elif entry.time_suffix and entry.time_suffix.startswith("⏳"):

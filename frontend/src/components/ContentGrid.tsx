@@ -77,21 +77,52 @@ export default function ContentGrid({
                   </span>
                   <span className={cx("ci-body")}>
                     <span title={it.title} className={cx("ci-title")}>
-                      {it.title || "未命名歌单"}
+                      {it.title ||
+                        (platformId === "github" ? "未命名仓库" : "未命名歌单")}
                     </span>
                     <span className={cx("ci-meta")}>
-                      {it.count || 0}
-                      {" 首 "}
-                      {it.view_count ? (
+                      {platformId === "github" ? (
                         <Fragment>
-                          {" · "}
-                          {fmtNum(it.view_count)}
-                          {" 次播放"}
+                          {fmtNum(it.count || 0)}
+                          {" ★"}
+                          {it.view_count ? (
+                            <Fragment>
+                              {" · "}
+                              {fmtNum(it.view_count)}
+                              {" Fork"}
+                            </Fragment>
+                          ) : null}
+                          {it.extra?.language ? (
+                            <Fragment>
+                              {" · "}
+                              {it.extra.language}
+                            </Fragment>
+                          ) : null}
                         </Fragment>
-                      ) : null}
+                      ) : (
+                        <Fragment>
+                          {it.count || 0}
+                          {" 首 "}
+                          {it.view_count ? (
+                            <Fragment>
+                              {" · "}
+                              {fmtNum(it.view_count)}
+                              {" 次播放"}
+                            </Fragment>
+                          ) : null}
+                        </Fragment>
+                      )}
                     </span>
                     <span className={cx("ci-sub")}>
-                      {it.is_owner === false ? "收藏" : "创建"}{" "}
+                      {platformId === "github"
+                        ? it.is_owner === false
+                          ? "Star"
+                          : it.extra?.fork
+                            ? "Fork"
+                            : "创建"
+                        : it.is_owner === false
+                          ? "收藏"
+                          : "创建"}{" "}
                       {it.creator ? (
                         <Fragment>
                           {" · "}

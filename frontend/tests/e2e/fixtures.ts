@@ -13,6 +13,7 @@ export const ids = [
   "weibo",
   "genshin",
   "xhs",
+  "github",
 ] as const;
 export const graphNode = (
   platform: GraphNode["platform"],

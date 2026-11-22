@@ -833,6 +833,22 @@ def content_detail(platform, item_id):
 
 SNAPSHOT_TTL = 30 * 60  # /all 中 profile/playlists/events 快照的有效期（秒），过期实时重拉
 
+_AUTH_EXPIRED_KEYWORDS = (
+    "登录态已失效",
+    "登录已过期",
+    "用户未登录",
+    "凭证无效或已过期",
+    "请更新 Cookie",
+    "客户端未初始化",
+)
+
+
+def _is_auth_expired_error(msg: str) -> bool:
+    """判定子模块错误是否为 Cookie/Token 登录凭证失效"""
+    s = str(msg or "")
+    return any(k in s for k in _AUTH_EXPIRED_KEYWORDS)
+
+
 
 def _snapshot_age(snapshot: dict):
     """快照的年龄（秒）；无法解析时间返回 None"""
@@ -914,6 +930,7 @@ def platform_all(platform):
     try:
         result = {"platform": platform, "uid": uid}
         errors = []  # 收集各子模块错误，但不中断整体返回
+        pending_snapshots: list[tuple[str, dict]] = []  # 确认无登录态失效后再统一写入快照
 
         # 用户资料：30 分钟内的快照直接用（refresh=1 强制实时）；过期/缺失实时拉取，失败计入 errors
         result["profile"] = None
@@ -939,7 +956,7 @@ def platform_all(platform):
                 if profile:
                     profile_dict = dataclass_to_dict(profile)
                     result["profile"] = profile_dict
-                    get_store().save_snapshot(platform, uid, "profile", profile_dict)
+                    pending_snapshots.append(("profile", profile_dict))
         except Exception as e:
             errors.append(f"profile: {e}")
 
@@ -969,10 +986,10 @@ def platform_all(platform):
                 item_dicts = [dataclass_to_dict(i) for i in items]
                 result["playlists"] = item_dicts
                 if item_dicts:
-                    get_store().save_snapshot(platform, uid, "playlists", {
+                    pending_snapshots.append(("playlists", {
                         "count": len(item_dicts), "items": item_dicts,
-                    })
-                    print(f"[{platform}] /all playlists 实时拉取并保存: {len(item_dicts)} 项")
+                    }))
+                    print(f"[{platform}] /all playlists 实时拉取: {len(item_dicts)} 项")
                 else:
                     print(f"[{platform}] /all playlists 实时拉取为空")
         except Exception as e:
@@ -989,9 +1006,9 @@ def platform_all(platform):
                 week_data = [dataclass_to_dict(e) for e in weekly]
                 result["records"] = {"allTime": all_data, "weekly": week_data}
                 if all_data or week_data:
-                    get_store().save_snapshot(platform, uid, "records", {
+                    pending_snapshots.append(("records", {
                         "allTime": all_data, "weekly": week_data,
-                    })
+                    }))
         except Exception as e:
             errors.append(f"records: {e}")
 
@@ -1021,10 +1038,10 @@ def platform_all(platform):
                 event_dicts = [dataclass_to_dict(e) for e in events]
                 result["events"] = event_dicts
                 if event_dicts:
-                    get_store().save_snapshot(platform, uid, "events", {
+                    pending_snapshots.append(("events", {
                         "count": len(event_dicts), "items": event_dicts,
-                    })
-                    print(f"[{platform}] /all events 实时拉取并保存: {len(event_dicts)} 条")
+                    }))
+                    print(f"[{platform}] /all events 实时拉取: {len(event_dicts)} 条")
                 else:
                     print(f"[{platform}] /all events 实时拉取为空")
         except Exception as e:
@@ -1037,10 +1054,10 @@ def platform_all(platform):
             follows_list, _more, _total = adapter.get_follows(uid)
             result["follows"] = follows_list
             if follows_list:
-                get_store().save_snapshot(platform, uid, "follows", {
+                pending_snapshots.append(("follows", {
                     "count": len(follows_list),
                     "items": follows_list,
-                })
+                }))
         except Exception as e:
             errors.append(f"follows: {e}")
 
@@ -1050,14 +1067,24 @@ def platform_all(platform):
             followers_list, _more, _total = adapter.get_followers(uid)
             result["followers"] = followers_list
             if followers_list:
-                get_store().save_snapshot(platform, uid, "followers", {
+                pending_snapshots.append(("followers", {
                     "count": len(followers_list),
                     "items": followers_list,
-                })
+                }))
         except Exception as e:
             errors.append(f"followers: {e}")
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        # 若任一子模块检测到 Cookie/登录态已失效，拒绝返回旧快照或未登录残缺数据，也不写入快照
+        auth_errors = [e for e in errors if _is_auth_expired_error(e)]
+        if auth_errors:
+            detail = "auth_expired: " + "; ".join(auth_errors)
+            _log_fetch("GET /all", platform, uid, False, elapsed_ms, detail)
+            return _error("登录凭证已失效，请更新 Cookie 后重试: " + "; ".join(auth_errors))
+
+        for snap_type, snap_payload in pending_snapshots:
+            get_store().save_snapshot(platform, uid, snap_type, snap_payload)
 
         # 检查是否有任何成功获取的数据
         has_any_data = (
@@ -1201,7 +1228,7 @@ def unified_timeline():
                 now = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
                 lines = ["# 📊 多平台活动时间线（历史）", "", f"生成时间: {now}", ""]
                 for r in all_rows:
-                    icon = {"netease": "🎵", "bilibili": "📺", "weibo": "💬", "genshin": "⚔️"}.get(r.get("platform", ""), "📌")
+                    icon = {"netease": "🎵", "bilibili": "📺", "douyin": "🎶", "qqmusic": "🎵", "weibo": "💬", "genshin": "⚔️", "xhs": "📕", "github": "🐙"}.get(r.get("platform", ""), "📌")
                     time_part = r.get("time_str", "") or r.get("time_suffix", "") or "时间未知"
                     line = f"- **{time_part}** {icon} {r.get('summary', '')}"
                     if r.get("detail"):

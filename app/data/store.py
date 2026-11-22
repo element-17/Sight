@@ -552,20 +552,24 @@ class DataStore:
             if not data.get("_marker"):
                 real_rows.append(row)
 
-        # 若今天真实快照不足 2 条，向前补充
-        if len(real_rows) < 2:
-            needed = 2 - len(real_rows)
+        # 若今天完全没有采集到快照（如 Cookie 已失效或今日未拉取），不拿往日旧快照充当今日变化
+        if not real_rows:
+            return []
+
+        # 若今天只有 1 条真实快照，向前追溯最近 1 条非标记真实快照作为对比基线
+        if len(real_rows) == 1:
             older = self._connect().execute(
                 "SELECT data_json, created_at FROM snapshots "
                 "WHERE platform=? AND uid=? AND data_type=? "
                 "AND created_at < ? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (platform, uid, data_type, today_start, needed),
+                "ORDER BY created_at DESC LIMIT 20",
+                (platform, uid, data_type, today_start),
             ).fetchall()
-            for row in reversed(older):
+            for row in older:
                 data = json.loads(row["data_json"])
                 if not data.get("_marker"):
                     real_rows.insert(0, row)
+                    break
 
         return real_rows
 

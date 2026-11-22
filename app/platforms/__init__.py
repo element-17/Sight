@@ -46,6 +46,9 @@ def _factory_for(platform_id: str) -> Optional[Callable]:
     elif platform_id == "xhs":
         from app.platforms.xhs.adapter import XhsAdapter
         factory = lambda account_id=None: XhsAdapter(account_id=account_id)
+    elif platform_id == "github":
+        from app.platforms.github.adapter import GitHubAdapter
+        factory = lambda account_id=None: GitHubAdapter(account_id=account_id)
 
     if factory:
         _FACTORIES[platform_id] = factory

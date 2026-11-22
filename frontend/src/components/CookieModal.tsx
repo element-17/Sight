@@ -58,6 +58,8 @@ export default function CookieModal({
     douyin:
       "浏览器登录 douyin.com → F12 打开开发者工具 → Network(网络) → 刷新页面 → 点击任意 douyin.com 请求 → Request Headers(请求标头) 里复制完整 Cookie 值粘贴到下方",
     xhs: "浏览器登录 xiaohongshu.com → F12 → Network → 刷新 → 复制任意请求的 Cookie 请求头",
+    github:
+      "GitHub Settings → Developer settings → Personal access tokens → 生成 Token（ghp_ 或 github_pat_ 开头）直接粘贴到下方，或粘贴 token=ghp_xxx；未配置凭证也可按公开 API 限额（60次/小时）查询",
   };
   const howto =
     HOWTO[selPlatform] ||

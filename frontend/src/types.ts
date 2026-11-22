@@ -1,5 +1,12 @@
 export type PlatformId =
-  "netease" | "bilibili" | "douyin" | "qqmusic" | "weibo" | "genshin" | "xhs";
+  | "netease"
+  | "bilibili"
+  | "douyin"
+  | "qqmusic"
+  | "weibo"
+  | "genshin"
+  | "xhs"
+  | "github";
 export type ViewId = PlatformId | "timeline" | "graph";
 export type Numeric = number | string;
 export interface Stat {
@@ -37,6 +44,13 @@ export interface ProfileExtra extends Record<string, unknown> {
   fans?: Numeric;
   interaction?: Numeric;
   notes_count?: Numeric;
+  login?: string;
+  followers?: Numeric;
+  following?: Numeric;
+  public_repos?: Numeric;
+  public_gists?: Numeric;
+  company?: string;
+  blog?: string;
 }
 export interface Profile {
   platform: PlatformId;
@@ -81,6 +95,11 @@ export interface ContentExtra extends Record<string, unknown> {
   constellation?: Numeric;
   weapon_name?: string;
   weapon_level?: Numeric;
+  full_name?: string;
+  language?: string;
+  stargazers_count?: Numeric;
+  forks_count?: Numeric;
+  fork?: boolean;
 }
 export interface ContentItem {
   item_id: string;

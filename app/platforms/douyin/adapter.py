@@ -287,9 +287,15 @@ class DouyinAdapter(BasePlatformAdapter):
                 })
             print(f"[抖音] search_user '{keyword}': 找到 {len(results)} 个用户")
             return results
+        except RuntimeError:
+            raise
+        except KeyError as e:
+            msg = f"[抖音] 搜索用户失败：接口未返回 {e} 字段（Cookie 可能已过期或触发风控验证码，请更新 Cookie）"
+            print(msg)
+            raise RuntimeError(msg) from e
         except Exception as e:
             print(f"[抖音] search_user 失败: {e}")
-            raise  # 带真实原因上抛（Cookie 失效/风控等），由调用方决定如何展示
+            raise RuntimeError(f"[抖音] 搜索用户失败: {e}") from e
 
     # ==================== 用户资料 ====================
 
@@ -415,7 +421,11 @@ class DouyinAdapter(BasePlatformAdapter):
             return items
         except RuntimeError:
             raise
-        except (requests.RequestException, ValueError, KeyError, AttributeError) as e:
+        except KeyError as e:
+            raise RuntimeError(
+                f"[抖音] 获取作品列表失败：接口未返回 {e} 字段（Cookie 可能已失效或触发风控，请更新 Cookie）"
+            ) from e
+        except (requests.RequestException, ValueError, AttributeError) as e:
             raise RuntimeError(f"[抖音] 获取作品列表失败: {e}") from e
 
     def _build_content_item(self, aweme: dict) -> Optional[ContentItem]:

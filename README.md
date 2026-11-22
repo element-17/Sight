@@ -7,7 +7,7 @@
 - **功能三**：通过分析对象在各平台的公开数据，生成社交网络关系图谱
 - **功能四**（开发中）：接入agent生成一站式的人物形象侧写
 
-目前支持的平台有：网易云音乐、哔哩哔哩、抖音、QQ音乐、微博、小红书
+目前支持的平台有：网易云音乐、哔哩哔哩、抖音、QQ音乐、微博、原神、小红书、GitHub
 ## 快速开始
 
 环境要求：Python 3.10+，Node.js 22.12+（前端构建与抖音签名）。
@@ -57,7 +57,7 @@ flowchart LR
     UI["前端 React + TypeScript + ECharts<br/>平台视图 / 时间线 / 图谱 / 终端"]
     API["routes/api.py<br/>REST + SSE 唯一入口"]
     POOL["AdapterPool<br/>多账号租借轮询"]
-    ADP["平台适配器 ×7"]
+    ADP["平台适配器 ×8"]
     CRED["credentials/accounts.json"]
     NET["各平台公开接口<br/>含移植签名栈 ref_*"]
     SVC["services<br/>timeline / social_expander / expand_queue"]
@@ -115,7 +115,7 @@ app/
 │   ├── base.py              适配器抽象接口 + 数据模型
 │   ├── pool.py              多账号适配器池（租借制轮询）
 │   ├── __init__.py          平台工厂注册中心（延迟构造）
-│   └── <platform>/          7 个平台适配器（移植签名栈见 docs/MANUAL.md）
+│   └── <platform>/          8 个平台适配器（移植签名栈见 docs/MANUAL.md）
 ├── services/
 │   ├── timeline.py          统一时间线（快照对比推断时间窗口）
 │   ├── social_expander.py   社交展开核心

@@ -48,6 +48,8 @@ class XhsAdapter(BasePlatformAdapter):
         super().__init__(credentials, account_id)
         self._auth_pc = None
         self._api_pc = None
+        self._init_error: str = ""
+        self._failed_cookie_str: Optional[str] = None
         self._last_request_at = 0.0
         # /graph 接口会从多个线程并发调用本适配器，限流必须串行化
         self._rl_lock = threading.Lock()
@@ -58,30 +60,32 @@ class XhsAdapter(BasePlatformAdapter):
         """加载本账号的小红书 Cookie 字符串（统一走 CredentialManager / accounts.json）"""
         cookies = self._load_cookies()
         if cookies:
-            print(f"[小红书] 加载 Cookie: {len(cookies)} 个字段（account_id={self.account_id or 'primary'}）")
             return "; ".join([f"{k}={v}" for k, v in cookies.items()])
-
-        print("[小红书] 警告: 未配置 Cookie")
         return ""
 
     # ==================== Auth 初始化 ====================
 
     @property
     def auth_pc(self):
-        """获取 PC Auth 实例（延迟初始化）"""
+        """获取 PC Auth 实例（延迟初始化；同一失效 Cookie 不重复触发网络 bootstrap）"""
         if self._auth_pc is None:
+            cookie_str = self._load_cookie_str()
+            if not cookie_str:
+                self._init_error = "未配置 Cookie"
+                return None
+            if self._failed_cookie_str == cookie_str:
+                return None
             try:
                 from ref_xhs_pc.auth import XHSPcAuth
-                cookie_str = self._load_cookie_str()
-                if not cookie_str:
-                    print("[小红书] PC Auth: Cookie 为空，部分功能受限")
-                    return None
+                print(f"[小红书] 加载 Cookie（account_id={self.account_id or 'primary'}）")
                 self._auth_pc = XHSPcAuth.from_cookie(cookie_str)
-                print(f"[小红书] PC Auth 已加载")
+                self._init_error = ""
+                self._failed_cookie_str = None
+                print("[小红书] PC Auth 已加载")
             except Exception as e:
-                import traceback
+                self._init_error = str(e)
+                self._failed_cookie_str = cookie_str
                 print(f"[小红书] PC Auth 初始化失败: {e}")
-                traceback.print_exc()
                 return None
         return self._auth_pc
 
@@ -91,14 +95,22 @@ class XhsAdapter(BasePlatformAdapter):
         if self._api_pc is None and self.auth_pc:
             try:
                 from ref_apis.xhs_pc_apis import XHS_Apis
-                self._api_pc = XHS_Apis(self.auth_pc).bootstrap()
-                print(f"[小红书] PC API 已初始化")
+                api = XHS_Apis(self.auth_pc)
+                # XHSPcAuth.from_cookie 内部已执行过一次 bootstrap()，仅在未就绪时补调
+                if not getattr(self.auth_pc, "_user_id_ready", False):
+                    api.bootstrap()
+                self._api_pc = api
+                self._init_error = ""
+                print("[小红书] PC API 已初始化")
             except Exception as e:
-                import traceback
+                self._init_error = str(e)
                 print(f"[小红书] PC API 初始化失败: {e}")
-                traceback.print_exc()
                 return None
         return self._api_pc
+
+    def _uninit_error_msg(self) -> str:
+        detail = f"：{self._init_error}" if self._init_error else "（请检查 Cookie 是否已配置/有效）"
+        return f"小红书客户端未初始化{detail}"
 
     # ==================== 限速 ====================
 
@@ -151,7 +163,7 @@ class XhsAdapter(BasePlatformAdapter):
         """搜索用户（失败时抛出带原因的异常，由调用方展示）"""
         try:
             if not self.api_pc:
-                raise RuntimeError("小红书客户端未初始化（请检查 Cookie 是否已配置/有效）")
+                raise RuntimeError(self._uninit_error_msg())
             self._rate_limit()
             success, msg, res = self.api_pc.search_some_user(keyword, limit)
             if not success:
@@ -186,7 +198,7 @@ class XhsAdapter(BasePlatformAdapter):
     def get_profile(self, uid: str) -> Optional[PlatformProfile]:
         """获取用户资料（接口失败上抛真实原因）"""
         if not self.api_pc:
-            raise RuntimeError("小红书客户端未初始化（请检查 Cookie 是否已配置/有效）")
+            raise RuntimeError(self._uninit_error_msg())
         try:
             self._rate_limit()
             success, msg, res = self.api_pc.get_user_info(uid)
@@ -250,7 +262,7 @@ class XhsAdapter(BasePlatformAdapter):
     def get_content_lists(self, uid: str) -> list[ContentItem]:
         """获取用户的笔记列表"""
         if not self.api_pc:
-            raise RuntimeError("小红书客户端未初始化（请检查 Cookie 是否已配置/有效）")
+            raise RuntimeError(self._uninit_error_msg())
 
         try:
             # 构建用户主页 URL
