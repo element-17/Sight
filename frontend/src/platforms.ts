@@ -44,6 +44,7 @@ export const PLATFORMS: PlatformConfig[] = [
     resultUid: (u) => String(u.uid ?? ""),
     itemLink: (it) =>
       it.item_id ? `https://music.163.com/#/playlist?id=${it.item_id}` : "",
+    userLink: (n) => `https://music.163.com/#/user/home?id=${n.uid}`,
     vipLabel: (p) => (p.is_vip ? p.vip_label || "黑胶VIP" : ""),
     metaLine: (p) => {
       const out: string[] = [];
@@ -81,6 +82,7 @@ export const PLATFORMS: PlatformConfig[] = [
       it.extra && it.extra.bvid
         ? `https://www.bilibili.com/video/${it.extra.bvid}`
         : "",
+    userLink: (n) => `https://space.bilibili.com/${n.uid}`,
     vipLabel: (p) => (p.is_vip ? p.vip_label || "大会员" : ""),
     metaLine: (p) => {
       const out: string[] = [];
@@ -116,6 +118,8 @@ export const PLATFORMS: PlatformConfig[] = [
     resultUid: (u) => String(u.sec_uid || u.uid || ""),
     itemLink: (it) =>
       it.item_id ? `https://www.douyin.com/video/${it.item_id}` : "",
+    userLink: (n) =>
+      n.sec_uid ? `https://www.douyin.com/user/${n.sec_uid}` : "",
     vipLabel: (p) => (p.is_vip ? "明星" : ""),
     metaLine: (p) => {
       const e = p.extra || {};
@@ -147,6 +151,7 @@ export const PLATFORMS: PlatformConfig[] = [
     hasRecords: false,
     hasEvents: false, // QQ音乐的"动态"只是歌单复刻，与下方歌单列表重复，不展示
     hasSocial: true,
+    graphSocial: false, // 搜索返回 encrypt_uin，平台限制不支持图谱展开关注/粉丝
     hasQrLogin: true,
     looksLikeUid: (s) => /^\d+$/.test(s) || /\*\*$/.test(s),
     resultUid: (u) => String(u.uid ?? ""),
@@ -181,6 +186,7 @@ export const PLATFORMS: PlatformConfig[] = [
     looksLikeUid: (s) => /^\d+$/.test(s),
     resultUid: (u) => String(u.uid ?? ""),
     itemLink: () => "",
+    userLink: (n) => `https://weibo.com/u/${n.uid}`,
     vipLabel: (p) => (p.is_vip ? "认证" : ""),
     metaLine: (p) => {
       const out: string[] = [];
@@ -249,6 +255,7 @@ export const PLATFORMS: PlatformConfig[] = [
     resultUid: (u) => String(u.uid ?? ""),
     itemLink: (it) =>
       it.item_id ? `https://www.xiaohongshu.com/explore/${it.item_id}` : "",
+    userLink: (n) => `https://www.xiaohongshu.com/user/profile/${n.uid}`,
     metaLine: (p) => {
       const e = p.extra || {};
       const out: string[] = [];
@@ -288,6 +295,7 @@ export const PLATFORMS: PlatformConfig[] = [
         : it.item_id
           ? `https://github.com/${String(it.item_id).replace("__", "/")}`
           : "",
+    userLink: (n) => `https://github.com/${n.uid}`,
     vipLabel: (p) => (p.is_vip ? p.vip_label || "认证" : ""),
     metaLine: (p) => {
       const e = p.extra || {};

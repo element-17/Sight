@@ -49,6 +49,7 @@ class WeiboAdapter(BasePlatformAdapter):
         super().__init__(credentials, account_id)
         self._session: requests.Session | None = None
         self._last_request_at = 0.0
+        self._container_cache: dict[str, str] = {}
         self.last_api_error: str | None = None  # 最近一次业务错误，供上层透传真实原因
 
     @property
@@ -79,6 +80,9 @@ class WeiboAdapter(BasePlatformAdapter):
 
     def _rate_limit(self):
         """请求间隔控制"""
+        if self._last_request_at <= 0:
+            self._last_request_at = time.time()
+            return
         now = time.time()
         min_interval = 1.5  # 微博请求间隔（秒）
         elapsed = now - self._last_request_at
@@ -89,13 +93,14 @@ class WeiboAdapter(BasePlatformAdapter):
     def _mobile_get(self, params: dict) -> dict:
         """调用移动端 API；登录失效/接口错误/重试耗尽时抛 RuntimeError，不返回空值伪装成功"""
         last_error = "未知错误"
-        for attempt in range(MAX_RETRIES):
+        max_attempts = min(MAX_RETRIES, 2)
+        for attempt in range(max_attempts):
             try:
                 self._rate_limit()
                 resp = self.session.get(
                     self.MOBILE_API,
                     params=params,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=(5, REQUEST_TIMEOUT),
                 )
 
                 if resp.status_code == 200:
@@ -109,43 +114,53 @@ class WeiboAdapter(BasePlatformAdapter):
                     # ok=0 通常表示登录态失效或参数错误
                     msg = data.get("msg", "")
                     raise RuntimeError(f"[微博] 接口返回异常: {msg or 'ok=%s' % data.get('ok')}")
-                else:
-                    last_error = f"HTTP {resp.status_code}"
-                    print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), params={params}")
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(1.5 + attempt * 0.5)
+                if resp.status_code in (401, 403, 418):
+                    raise RuntimeError(f"[微博] 请求被风控拦截或登录态已失效 (HTTP {resp.status_code})，请更新 Cookie")
+                last_error = f"HTTP {resp.status_code}"
+                print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), params={params}")
+                if attempt < max_attempts - 1:
+                    time.sleep(1.5 + attempt * 0.5)
+                    self._last_request_at = time.time()
 
             except RuntimeError:
                 raise
             except (requests.RequestException, ValueError, json.JSONDecodeError) as e:
                 last_error = str(e)
                 print(f"[微博] 请求失败 (attempt {attempt+1}): {e}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt)
+                    self._last_request_at = time.time()
 
         self.last_api_error = last_error
         raise RuntimeError(f"[微博] 请求失败: {last_error}")
 
     def _web_get(self, url: str, params: dict = None, headers: dict = None) -> Optional[str]:
         """获取网页内容（SSR 兜底）"""
-        for attempt in range(MAX_RETRIES):
+        max_attempts = min(MAX_RETRIES, 2)
+        for attempt in range(max_attempts):
             try:
                 self._rate_limit()
                 resp = self.session.get(
                     url,
                     params=params,
                     headers=headers,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=(5, REQUEST_TIMEOUT),
                 )
                 if resp.status_code == 200:
                     return resp.text
+                if resp.status_code in (401, 403, 418):
+                    raise RuntimeError(f"[微博] 网页访问受限或登录态已失效 (HTTP {resp.status_code})，请更新 Cookie")
                 print(f"[微博] 网页 HTTP {resp.status_code} (attempt {attempt+1}), url={url}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt * 0.5)
+                    self._last_request_at = time.time()
+            except RuntimeError:
+                raise
             except requests.RequestException as e:
                 print(f"[微博] 网页请求失败 (attempt {attempt+1}): {e}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt)
+                    self._last_request_at = time.time()
         return None
 
     # ==================== 状态检查 ====================
@@ -182,13 +197,16 @@ class WeiboAdapter(BasePlatformAdapter):
             return None
 
         # 尝试获取昵称
-        profile = self._get_profile_via_mobile(uid)
-        if profile:
-            return {
-                "uid": profile.uid,
-                "nickname": profile.nickname,
-                "avatarUrl": profile.avatar_url,
-            }
+        try:
+            profile = self.get_profile(uid)
+            if profile:
+                return {
+                    "uid": profile.uid,
+                    "nickname": profile.nickname,
+                    "avatarUrl": profile.avatar_url,
+                }
+        except Exception:
+            pass
         return {"uid": uid, "nickname": "", "avatarUrl": ""}
 
     # ==================== 用户搜索 ====================
@@ -293,6 +311,10 @@ class WeiboAdapter(BasePlatformAdapter):
         follows = tab_info.get("follow", {})
         fans = tab_info.get("fans", {})
 
+        containerid = data.get("tabsInfo", {}).get("containerid", "")
+        if containerid:
+            self._container_cache[uid] = containerid
+
         return PlatformProfile(
             platform="weibo",
             uid=str(user_info.get("id", uid)),
@@ -331,17 +353,15 @@ class WeiboAdapter(BasePlatformAdapter):
 
         items = []
 
-        # 先获取 containerid（微博列表容器的 ID）
-        data = self._mobile_get({"type": "uid", "value": uid})
-        if not data:
-            return []
-
-        tabs_info = data.get("tabsInfo", {})
-        containerid = tabs_info.get("containerid", "")
-
+        # 先复用缓存的 containerid（避免与 get_profile 重复请求）
+        containerid = self._container_cache.get(uid, "")
         if not containerid:
-            # 默认构造：107603 + uid 是微博列表的 containerid
-            containerid = f"107603{uid}"
+            data = self._mobile_get({"type": "uid", "value": uid})
+            if not data:
+                return []
+            tabs_info = data.get("tabsInfo", {})
+            containerid = tabs_info.get("containerid", "") or f"107603{uid}"
+            self._container_cache[uid] = containerid
 
         # 翻页获取微博列表
         for page in range(1, 4):  # 最多取 3 页
@@ -442,9 +462,12 @@ class WeiboAdapter(BasePlatformAdapter):
 
         events = []
 
-        # 获取 containerid
-        data = self._mobile_get({"type": "uid", "value": uid})
-        containerid = data.get("tabsInfo", {}).get("containerid", f"107603{uid}") if data else f"107603{uid}"
+        # 复用缓存的 containerid（避免重复请求）
+        containerid = self._container_cache.get(uid, "")
+        if not containerid:
+            data = self._mobile_get({"type": "uid", "value": uid})
+            containerid = data.get("tabsInfo", {}).get("containerid", f"107603{uid}") if data else f"107603{uid}"
+            self._container_cache[uid] = containerid
 
         max_pages = min(3, max(1, limit // 10 + 1))
 
@@ -526,14 +549,15 @@ class WeiboAdapter(BasePlatformAdapter):
         """
         headers = {"Referer": "https://weibo.com/", "X-Requested-With": "XMLHttpRequest"}
         last_error = "未知错误"
-        for attempt in range(MAX_RETRIES):
+        max_attempts = min(MAX_RETRIES, 2)
+        for attempt in range(max_attempts):
             try:
                 self._rate_limit()
                 resp = self.session.get(
                     f"https://weibo.com{path}",
                     params=params,
                     headers=headers,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=(5, REQUEST_TIMEOUT),
                 )
                 if resp.status_code == 200:
                     try:
@@ -544,21 +568,27 @@ class WeiboAdapter(BasePlatformAdapter):
                     if isinstance(data, dict) and data.get("ok") == 1:
                         self.last_api_error = None
                         return data
+                    if isinstance(data, dict) and data.get("ok") == -100:
+                        raise RuntimeError("[微博] 登录态已失效，请更新 Cookie (ok=-100)")
                     msg = (data or {}).get("message") or ""
                     self.last_api_error = msg or f"接口返回异常 (ok={(data or {}).get('ok')})"
                     print(f"[微博] PC 接口返回异常: {self.last_api_error}, path={path}")
                     raise RuntimeError(f"[微博] {self.last_api_error}")
+                if resp.status_code in (401, 403, 418):
+                    raise RuntimeError(f"[微博] 登录态已失效或触发风控 (HTTP {resp.status_code})，请更新 Cookie")
                 last_error = f"HTTP {resp.status_code}"
                 print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), path={path}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt * 0.5)
+                    self._last_request_at = time.time()
             except RuntimeError:
                 raise
             except (requests.RequestException, ValueError) as e:
                 last_error = str(e)
                 print(f"[微博] 请求失败 (attempt {attempt+1}): {e}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt)
+                    self._last_request_at = time.time()
         raise RuntimeError(f"[微博] 请求失败: {last_error}")
 
     def _social_page(
@@ -573,8 +603,11 @@ class WeiboAdapter(BasePlatformAdapter):
         items: list[dict] = []
         total = -1
         page = first_page
+        max_pages = 20
+        pages_fetched = 0
         skip_in_page = skip % per_page
-        while len(items) < limit:
+        while len(items) < limit and pages_fetched < max_pages:
+            pages_fetched += 1
             params = {"page": page, "uid": uid}
             if relate:
                 params["relate"] = relate

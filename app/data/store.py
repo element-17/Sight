@@ -15,13 +15,14 @@ SQLite 数据存储
   若与最近一条同类型真实快照的哈希相同 → 只存标记 {"_marker": true}，不存完整数据。
   哈希不同 → 存完整数据，后续变化检测方法会自动跳过标记只对比真实快照。
 """
+from contextlib import closing, contextmanager
 import json
 import sqlite3
 import hashlib
 import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # 数据库路径
 DB_DIR = Path(__file__).parent.parent.parent / "data"
@@ -43,10 +44,14 @@ class DataStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """受控的 SQLite 连接上下文：退出时自动 commit/rollback 并关闭连接，避免句柄泄漏"""
         conn = sqlite3.connect(str(self._db_path))
         conn.row_factory = sqlite3.Row
-        return conn
+        with closing(conn):
+            with conn:
+                yield conn
 
     def _init_db(self):
         with self._connect() as conn:
@@ -131,12 +136,13 @@ class DataStore:
 
     def _get_latest_hash(self, platform: str, uid: str, data_type: str) -> Optional[str]:
         """获取最近一条同类型真实快照（非标记）的哈希值"""
-        row = self._connect().execute(
-            "SELECT data_json FROM snapshots "
-            "WHERE platform=? AND uid=? AND data_type=? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (platform, uid, data_type),
-        ).fetchone()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data_json FROM snapshots "
+                "WHERE platform=? AND uid=? AND data_type=? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (platform, uid, data_type),
+            ).fetchone()
         if row:
             data = json.loads(row["data_json"])
             if not data.get("_marker"):
@@ -201,20 +207,21 @@ class DataStore:
             since: ISO 时间字符串，只返回此时间之后的数据
             limit: 最大返回数
         """
-        if since:
-            rows = self._connect().execute(
-                "SELECT data_json, created_at FROM snapshots "
-                "WHERE platform=? AND uid=? AND data_type=? AND created_at >= ? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (platform, uid, data_type, since, limit),
-            ).fetchall()
-        else:
-            rows = self._connect().execute(
-                "SELECT data_json, created_at FROM snapshots "
-                "WHERE platform=? AND uid=? AND data_type=? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (platform, uid, data_type, limit),
-            ).fetchall()
+        with self._connect() as conn:
+            if since:
+                rows = conn.execute(
+                    "SELECT data_json, created_at FROM snapshots "
+                    "WHERE platform=? AND uid=? AND data_type=? AND created_at >= ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (platform, uid, data_type, since, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT data_json, created_at FROM snapshots "
+                    "WHERE platform=? AND uid=? AND data_type=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (platform, uid, data_type, limit),
+                ).fetchall()
 
         result = []
         for row in rows:
@@ -537,39 +544,40 @@ class DataStore:
             hour=0, minute=0, second=0, microsecond=0
         ).isoformat()
 
-        rows = self._connect().execute(
-            "SELECT data_json, created_at FROM snapshots "
-            "WHERE platform=? AND uid=? AND data_type=? "
-            "AND created_at >= ? "
-            "ORDER BY created_at ASC",
-            (platform, uid, data_type, today_start),
-        ).fetchall()
-
-        # 过滤掉标记快照
-        real_rows = []
-        for row in rows:
-            data = json.loads(row["data_json"])
-            if not data.get("_marker"):
-                real_rows.append(row)
-
-        # 若今天完全没有采集到快照（如 Cookie 已失效或今日未拉取），不拿往日旧快照充当今日变化
-        if not real_rows:
-            return []
-
-        # 若今天只有 1 条真实快照，向前追溯最近 1 条非标记真实快照作为对比基线
-        if len(real_rows) == 1:
-            older = self._connect().execute(
+        with self._connect() as conn:
+            rows = conn.execute(
                 "SELECT data_json, created_at FROM snapshots "
                 "WHERE platform=? AND uid=? AND data_type=? "
-                "AND created_at < ? "
-                "ORDER BY created_at DESC LIMIT 20",
+                "AND created_at >= ? "
+                "ORDER BY created_at ASC",
                 (platform, uid, data_type, today_start),
             ).fetchall()
-            for row in older:
+
+            # 过滤掉标记快照
+            real_rows = []
+            for row in rows:
                 data = json.loads(row["data_json"])
                 if not data.get("_marker"):
-                    real_rows.insert(0, row)
-                    break
+                    real_rows.append(row)
+
+            # 若今天完全没有采集到快照（如 Cookie 已失效或今日未拉取），不拿往日旧快照充当今日变化
+            if not real_rows:
+                return []
+
+            # 若今天只有 1 条真实快照，向前追溯最近 1 条非标记真实快照作为对比基线
+            if len(real_rows) == 1:
+                older = conn.execute(
+                    "SELECT data_json, created_at FROM snapshots "
+                    "WHERE platform=? AND uid=? AND data_type=? "
+                    "AND created_at < ? "
+                    "ORDER BY created_at DESC LIMIT 20",
+                    (platform, uid, data_type, today_start),
+                ).fetchall()
+                for row in older:
+                    data = json.loads(row["data_json"])
+                    if not data.get("_marker"):
+                        real_rows.insert(0, row)
+                        break
 
         return real_rows
 

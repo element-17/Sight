@@ -71,10 +71,13 @@ class BilibiliAdapter(BasePlatformAdapter):
 
     def _rate_limit(self, extra_wait: float = 0):
         """请求间隔控制，支持额外等待（用于频率限制后）"""
+        if self._last_request_at <= 0:
+            self._last_request_at = time.time()
+            return
         now = time.time()
-        base_wait = 3.0  # B站基础间隔
-        # 连续触发频率限制时额外增加等待
-        penalty = min(self._consecutive_rate_limits * 2.0, 30.0)
+        base_wait = 1.5  # B站基础间隔
+        # 连续触发频率限制时温和增加等待，封顶 8s（避免多次退避叠加导致几十秒卡死）
+        penalty = min(self._consecutive_rate_limits * 1.5, 6.5)
         required_wait = base_wait + penalty + extra_wait
         elapsed = now - self._last_request_at
         if elapsed < required_wait:
@@ -84,29 +87,33 @@ class BilibiliAdapter(BasePlatformAdapter):
     def _get(self, endpoint: str, params: dict = None) -> dict:
         """带重试的 GET 请求；重试耗尽或业务错误时抛 RuntimeError，不返回空值伪装成功"""
         last_error = "未知错误"
-        for attempt in range(MAX_RETRIES):
+        max_attempts = min(MAX_RETRIES, 2)
+        for attempt in range(max_attempts):
             try:
                 self._rate_limit()
                 resp = self.session.get(
                     f"{self.BASE_API}{endpoint}",
                     params=params,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=(5, REQUEST_TIMEOUT),
                 )
 
-                # HTTP 429/412 是风控，直接退避重试
+                # HTTP 429/412 是风控，最多退避重试 1 次后快速失败
                 if resp.status_code in (412, 429):
                     self._consecutive_rate_limits += 1
-                    wait_time = min(5 + (self._consecutive_rate_limits * 2), 25)
-                    print(f"[B站] HTTP {resp.status_code}，等待 {wait_time}s 重试... endpoint={endpoint}")
                     last_error = f"HTTP {resp.status_code}（风控拦截）"
-                    time.sleep(wait_time)
+                    if attempt < max_attempts - 1:
+                        wait_time = min(3 + self._consecutive_rate_limits * 2, 8)
+                        print(f"[B站] HTTP {resp.status_code}，等待 {wait_time}s 重试... endpoint={endpoint}")
+                        time.sleep(wait_time)
+                        self._last_request_at = time.time()  # 避免下轮 _rate_limit 再次重复等待
                     continue
 
                 if resp.status_code != 200:
                     print(f"[B站] HTTP {resp.status_code}，等待重试... endpoint={endpoint}")
                     last_error = f"HTTP {resp.status_code}"
-                    if attempt < MAX_RETRIES - 1:
+                    if attempt < max_attempts - 1:
                         time.sleep(1.5 + attempt)
+                        self._last_request_at = time.time()
                     continue
 
                 # 防御：B站可能返回空响应或 JSON null（反爬虫特征）
@@ -114,23 +121,24 @@ class BilibiliAdapter(BasePlatformAdapter):
                 if not raw_text or raw_text == "null":
                     self._consecutive_rate_limits += 1
                     last_error = "空响应（疑似反爬虫拦截）"
-                    if attempt >= 1:
-                        # 已重试过一次仍为空，疑似反爬虫，快速放弃
+                    if attempt >= max_attempts - 1:
                         print(f"[B站] 空响应持续，疑似反爬虫拦截，放弃 endpoint={endpoint}")
                         break
                     print(f"[B站] 空响应 (attempt {attempt+1})，短暂等待后重试... endpoint={endpoint}")
-                    time.sleep(min(2 + self._consecutive_rate_limits * 1.5, 10))
+                    time.sleep(2.0)
+                    self._last_request_at = time.time()
                     continue
 
                 data = resp.json()
                 # 防御：json() 可能返回 None（body 为 "null"）
                 if data is None or not isinstance(data, dict):
                     last_error = f"非字典响应 type={type(data).__name__}"
-                    if attempt >= 1:
+                    if attempt >= max_attempts - 1:
                         print(f"[B站] 非字典响应持续 type={type(data).__name__}，放弃 endpoint={endpoint}")
                         break
                     print(f"[B站] 非字典响应 type={type(data).__name__} (attempt {attempt+1})，等待重试... endpoint={endpoint}")
                     time.sleep(1.5)
+                    self._last_request_at = time.time()
                     continue
 
                 code = data.get("code")
@@ -144,9 +152,11 @@ class BilibiliAdapter(BasePlatformAdapter):
 
                 if code == -799:
                     self._consecutive_rate_limits += 1
-                    wait_time = min(3 + (self._consecutive_rate_limits * 2), 20)
-                    print(f"[B站] 频率限制 (-799)，等待 {wait_time}s 重试... endpoint={endpoint}")
-                    time.sleep(wait_time)
+                    if attempt < max_attempts - 1:
+                        wait_time = min(3 + self._consecutive_rate_limits * 1.5, 8)
+                        print(f"[B站] 频率限制 (-799)，等待 {wait_time}s 重试... endpoint={endpoint}")
+                        time.sleep(wait_time)
+                        self._last_request_at = time.time()
                     continue
 
                 print(f"[B站] API 返回异常: code={code}, msg={msg}, endpoint={endpoint}")
@@ -157,8 +167,9 @@ class BilibiliAdapter(BasePlatformAdapter):
             except (requests.RequestException, ValueError, AttributeError) as e:
                 last_error = str(e)
                 print(f"[B站] 请求失败 (attempt {attempt+1}): {e}")
-                if attempt < MAX_RETRIES - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt)
+                    self._last_request_at = time.time()
 
         self.last_api_error = last_error
         raise RuntimeError(f"[B站] 请求失败: {last_error}, endpoint={endpoint}")
@@ -262,11 +273,12 @@ class BilibiliAdapter(BasePlatformAdapter):
     # ==================== 投稿/收藏夹 ====================
 
     def get_content_lists(self, uid: str) -> list[ContentItem]:
-        """获取用户投稿列表（翻页直到没有更多）"""
+        """获取用户投稿列表（设页数上限防超长拉取卡死）"""
         items = []
         pn = 1
         ps = 50
-        while True:
+        max_pages = 5
+        while pn <= max_pages:
             result = self._get("/x/space/arc/search", {
                 "mid": uid, "ps": ps, "pn": pn, "order": "pubdate",
             })

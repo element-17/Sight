@@ -25,7 +25,7 @@ refresh_user_info / check_alive / get_login_user`。
 - 适配器与服务层失败一律 `raise RuntimeError`（带平台前缀、账号标签、风控 code），
   禁止 `except: return []/None/{}` 把失败伪装成空数据。
 - 例外仅两个：`get_profile` 对"用户不存在"返回 `None`；`check_alive` 失败返回 `False`。
-- REST 层（`routes/api.py`）是唯一把异常转 JSON 的边界；`/all` 把子模块错误收进
+- REST 层（`app/routes/`，由 `routes/api.py` 统一汇总）是唯一把异常转 JSON 的边界；`/all` 把子模块错误收进
   `_errors` 数组原样给前端。
 
 ## 3. 各平台要点与坑
@@ -52,7 +52,7 @@ refresh_user_info / check_alive / get_login_user`。
 - **上游 [cv-cat/DouYin_Spider](https://github.com/cv-cat/DouYin_Spider) 有关键 bug，不可直接使用或同步**：
   关注列表接口 `max_time=0` 走错分支，只回 `mix_count` 不回列表，会被误判为"平台限制"。
   修复版是作者 fork [chenglei6-arch/DouYin_Spider](https://github.com/chenglei6-arch/DouYin_Spider)（见[上游同步](#5-上游同步)）。
-- 签名：`douyin_sign.js`（PyExecJS）生成 `a_bogus`；新签名栈
+- 签名：纯 Python `ref_utils/ab_pure.py` 生成 `a_bogus`；新签名栈
   （msToken/dtrait/bd_ticket）在 `ref_builder/`、`ref_utils/`。
 - 数字 UID 双策略解析（先直查、失败后与登录用户比对）——上游只支持 sec_uid，
   这是面板能从登录态起步的关键。
@@ -108,9 +108,9 @@ refresh_user_info / check_alive / get_login_user`。
 ```
 ① app/platforms/<id>/adapter.py    新建适配器（实现 base.py 抽象接口）
 ② app/platforms/__init__.py        _factory_for() 加分支 + known_platform_ids() 加 id
-③ app/credentials/__init__.py      PLATFORMS 元组加平台 id
-④ frontend/src/platforms.ts        PLATFORMS 数组加渲染配置（侧边栏/视图全由它驱动）
-⑤ app/services/timeline.py         PLATFORM_NAME_MAP / CONTENT_TYPE_MAP 加映射
+③ app/credentials/__init__.py      PLATFORMS 元组与 _PLATFORM_NAMES 加平台 id/中文名
+④ frontend/src/platforms.ts        PLATFORMS 数组加渲染配置（侧边栏/视图/图谱外链与展开能力全由它驱动）
+⑤ app/services/timeline.py         CONTENT_TYPE_MAP / PLATFORM_ICON_MAP 加映射（PLATFORM_NAME_MAP 自动继承自 credentials）
 ⑥ docs/MANUAL.md                   平台矩阵与要点补一行
 ```
 

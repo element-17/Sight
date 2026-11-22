@@ -65,6 +65,8 @@ class DouyinAdapter(BasePlatformAdapter):
         self._session: requests.Session | None = None
         # 缓存: uid -> {"nickname": ..., "sec_uid": ..., "uid": ..., "_cached_at": ts}
         self._user_cache: dict[str, dict] = {}
+        # 短时作品缓存（60s），避免 /all 先拉 playlists 再拉 events 时重复爬取全部作品
+        self._works_cache: dict[str, tuple[float, list[ContentItem]]] = {}
 
     # ==================== 用户信息缓存（TTL 30 分钟） ====================
 
@@ -86,7 +88,9 @@ class DouyinAdapter(BasePlatformAdapter):
         # msToken 缓存在 ref_utils.mstoken 模块级，适配器实例丢弃清不掉，必须显式清
         from app.platforms.douyin.ref_utils.mstoken import clear_cache as clear_mstoken
         clear_mstoken()
-        return {"用户信息缓存": len(self._user_cache)}
+        works_n = len(self._works_cache)
+        self._works_cache.clear()
+        return {"用户信息缓存": len(self._user_cache), "作品缓存": works_n}
 
     def test_account(self) -> dict:
         """抖音凭证深探测：get_my_uid 对过期旧 session 也能通过（账号弹窗曾据此误判可用），
@@ -313,22 +317,8 @@ class DouyinAdapter(BasePlatformAdapter):
             # 尝试解析用户信息
             user_info = self._resolve_user_info(uid)
             if not user_info:
-                # 直接作为 sec_uid 尝试
-                user_url = f"{self.BASE_URL}/user/{uid}"
-                self._rate_limit()
-                user_data = DouyinAPI.get_user_info(self.auth, user_url)
-                raw_user = user_data.get("user", {})
-                if not raw_user or not raw_user.get("uid"):
-                    print(f"[抖音] get_profile: 用户不存在或接口返回空")
-                    return None
-                user_info = {
-                    "uid": str(raw_user.get("uid", uid)),
-                    "sec_uid": raw_user.get("sec_uid", uid),
-                    "nickname": raw_user.get("nickname", ""),
-                    "avatar_url": self._extract_avatar_url(raw_user),
-                    "raw_user": raw_user,
-                }
-                self._cache_set_user(uid, user_info)
+                print(f"[抖音] get_profile: 用户不存在或接口返回空 ({uid})")
+                return None
 
             raw_user = user_info.get("raw_user", {})
             if not raw_user:
@@ -407,6 +397,10 @@ class DouyinAdapter(BasePlatformAdapter):
                 return []
             sec_uid = user_info["sec_uid"]
 
+            cached_works = self._works_cache.get(sec_uid)
+            if cached_works and time.time() - cached_works[0] < 60:
+                return list(cached_works[1])
+
             user_url = f"{self.BASE_URL}/user/{sec_uid}"
             self._rate_limit()
             aweme_list = DouyinAPI.get_user_all_work_info(self.auth, user_url)
@@ -418,6 +412,7 @@ class DouyinAdapter(BasePlatformAdapter):
                 if item and item.item_id not in seen_ids:
                     seen_ids.add(item.item_id)
                     items.append(item)
+            self._works_cache[sec_uid] = (time.time(), list(items))
             return items
         except RuntimeError:
             raise
@@ -513,7 +508,10 @@ class DouyinAdapter(BasePlatformAdapter):
             items: list[dict] = []
             has_more = False
             PAGE = 20
-            while len(items) < limit:
+            max_pages = 25
+            pages_fetched = 0
+            while len(items) < limit and pages_fetched < max_pages:
+                pages_fetched += 1
                 self._rate_limit()
                 if kind == "follows":
                     res = DouyinAPI.get_user_following_list(self.auth, user_id, sec_uid, max_time, PAGE)
@@ -569,7 +567,10 @@ class DouyinAdapter(BasePlatformAdapter):
                     remaining_skip = 0
                 if not has_more or not batch:
                     break
-                max_time = str(res.get("min_time", max_time))
+                next_max_time = str(res.get("min_time", max_time))
+                if next_max_time == max_time:
+                    break
+                max_time = next_max_time
             more = len(items) >= limit and has_more  # 抖音无总数：取满且 has_more 才算还有更多
             return items, more, -1
         except RuntimeError:

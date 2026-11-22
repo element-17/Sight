@@ -102,25 +102,26 @@ def known_platform_ids() -> list[str]:
 
 
 def list_platforms() -> list[dict]:
-    """列出所有可用平台"""
+    """列出所有可用平台（并行探测存活状态，避免启动时 8 个平台串行卡顿）"""
+    from concurrent.futures import ThreadPoolExecutor
     from app.credentials import CredentialManager
     available = CredentialManager.get_available_platforms()
 
-    result = []
-    for p in available:
+    def _probe_one(p: dict) -> dict:
         pid = p["id"]
         alive = False
         login_user = None
         pool = get_pool(pid)
         try:
             adapter = pool.primary() if pool else None
-            if adapter:
-                alive = adapter.check_alive()
-                login_user = adapter.get_login_user()
+            if adapter and p["has_credential"]:
+                alive = bool(adapter.check_alive())
+                if alive:
+                    login_user = adapter.get_login_user()
         except Exception:
             pass
 
-        result.append({
+        return {
             "id": pid,
             "name": p["name"],
             "has_credential": p["has_credential"],
@@ -128,5 +129,7 @@ def list_platforms() -> list[dict]:
             "login_user": login_user,
             # 账号池规模（含主账号），前端可据此展示"多账号加速"
             "account_count": pool.total if pool else 1,
-        })
-    return result
+        }
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(available)))) as ex:
+        return list(ex.map(_probe_one, available))

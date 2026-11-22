@@ -183,10 +183,13 @@ export interface PlatformConfig {
   hasRecords: boolean;
   hasEvents: boolean;
   hasSocial: boolean;
+  /** 图谱是否支持自动展开社交关系（默认同 hasSocial；搜索仅返回加密 uin 等受限平台可显式置 false） */
+  graphSocial?: boolean;
   hasQrLogin?: boolean;
   looksLikeUid: (value: string) => boolean;
   resultUid: (user: User) => string;
   itemLink: (item: Pick<ContentItem, "item_id" | "extra">) => string;
+  userLink?: (node: Pick<GraphNode, "uid" | "sec_uid">) => string;
   vipLabel?: (profile: Profile) => string;
   metaLine: (profile: Profile) => string[];
   stats: (profile: Profile) => Stat[];

@@ -65,22 +65,15 @@ export interface ChartClick {
 }
 echarts.use([GraphChart, TooltipComponent, CanvasRenderer]);
 export class GraphController {
-  USER_LINKS: Record<string, (node: GraphNode) => string> = {
-    bilibili: (n) => `https://space.bilibili.com/${n.uid}`,
-    netease: (n) => `https://music.163.com/#/user/home?id=${n.uid}`,
-    weibo: (n) => `https://weibo.com/u/${n.uid}`,
-    xhs: (n) => `https://www.xiaohongshu.com/user/profile/${n.uid}`,
-    douyin: (n) =>
-      n.sec_uid ? `https://www.douyin.com/user/${n.sec_uid}` : "",
-    github: (n) => `https://github.com/${n.uid}`,
-  };
-  SOCIAL_SUPPORT: Record<string, boolean> = {
-    bilibili: true,
-    netease: true,
-    weibo: true,
-    douyin: true,
-    github: true,
-  };
+  USER_LINKS: Record<string, (node: GraphNode) => string> = Object.fromEntries(
+    PLATFORMS.flatMap((p) => (p.userLink ? [[p.id, p.userLink]] : [])),
+  );
+  SOCIAL_SUPPORT: Record<string, boolean> = Object.fromEntries(
+    PLATFORMS.filter((p) => p.graphSocial ?? p.hasSocial).map((p) => [
+      p.id,
+      true,
+    ]),
+  );
   EXPAND_LIMIT_KEY = "graph_expand_limit";
   expandLimit = this.loadExpandLimit();
   ACCENT = "#3565e0";

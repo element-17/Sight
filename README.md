@@ -110,7 +110,14 @@ flowchart TD
 
 ```text
 app/
-├── routes/api.py            REST 路由（唯一把异常转 JSON 响应的地方）
+├── routes/                  REST 路由（按领域拆分，由 api.py 汇总，唯一把异常转 JSON 响应的地方）
+│   ├── api.py               Blueprint 聚合入口
+│   ├── common.py            公共响应/快照 TTL/检索缓存/Store 辅助
+│   ├── account_routes.py    平台列表、凭证与账号池、缓存清理
+│   ├── platform_routes.py   单平台搜索、详情、聚合 /all、B站存档、QQ扫码
+│   ├── graph_routes.py      关系图搜索、展开队列、节点刷新、持久化
+│   ├── timeline_routes.py   统一时间线查询与导出
+│   └── logs_routes.py       运行日志查询与 SSE 推送
 ├── platforms/
 │   ├── base.py              适配器抽象接口 + 数据模型
 │   ├── pool.py              多账号适配器池（租借制轮询）

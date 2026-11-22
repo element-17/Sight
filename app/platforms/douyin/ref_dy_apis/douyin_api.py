@@ -104,24 +104,25 @@ class DouyinAPI:
 
 
     @staticmethod
-    def get_user_all_work_info(auth, user_url: str, **kwargs) -> list:
+    def get_user_all_work_info(auth, user_url: str, max_pages: int = 10, **kwargs) -> list:
         """
-        获取用户全部作品信息.
+        获取用户作品信息（默认最多翻 10 页 / 约 180 条，防大号或游标停滞死循环）.
         :param auth: DouyinAuth object.
         :param user_url: 用户主页URL.
-        :return: 全部作品信息.
+        :return: 作品信息列表.
         """
         max_cursor = "0"
         work_list = []
-        while True:
+        for _ in range(max_pages):
             res_json = DouyinAPI.get_user_work_info(auth, user_url, max_cursor)
             if "aweme_list" not in res_json.keys():
                 break
-            works = res_json["aweme_list"]
-            max_cursor = str(res_json["max_cursor"])
+            works = res_json["aweme_list"] or []
+            next_cursor = str(res_json["max_cursor"])
             work_list.extend(works)
-            if res_json["has_more"] != 1:
+            if res_json.get("has_more") != 1 or not works or next_cursor == max_cursor:
                 break
+            max_cursor = next_cursor
         return work_list
 
 
@@ -520,9 +521,9 @@ class DouyinAPI:
         return work_list
 
     @staticmethod
-    def search_some_user(auth, query: str, num: int, **kwargs) -> list:
+    def search_some_user(auth, query: str, num: int, max_pages: int = 5, **kwargs) -> list:
         """
-        搜索指定数量用户.
+        搜索指定数量用户（设页数上限与空批次保护，防死循环）.
         :param auth: DouyinAuth object.
         :param query: 搜索关键字.
         :param num: 搜索结果数量.
@@ -531,11 +532,11 @@ class DouyinAPI:
         offset = "0"
         count = "25"
         user_list = []
-        while True:
+        for _ in range(max_pages):
             res_json = DouyinAPI.search_user(auth, query, offset, count)
-            users = res_json["user_list"]
+            users = res_json["user_list"] or []
             user_list.extend(users)
-            if res_json["has_more"] != 1 or len(user_list) >= num:
+            if res_json.get("has_more") != 1 or not users or len(user_list) >= num:
                 break
             offset = str(int(offset) + int(count))
         if len(user_list) > num:

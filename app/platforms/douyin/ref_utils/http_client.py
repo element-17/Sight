@@ -69,7 +69,7 @@ def _resolve_impersonate():
 # curl_cffi to a build that contains chrome151 makes the same code exact.
 IMPERSONATE = _resolve_impersonate()
 
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT = 15
 
 
 def _resolve_http_version():

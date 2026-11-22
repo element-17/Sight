@@ -164,7 +164,8 @@ export async function loadPlatform(
   if (
     !uid ||
     (get().data[id].loading && !force) ||
-    (get().data[id].loaded && !force)
+    (get().data[id].loaded && !force) ||
+    (!!get().data[id].error && !force)
   )
     return;
   const request = new AbortController();
@@ -486,7 +487,13 @@ export function initStore() {
     void refreshQueues();
     for (const platform of PLATFORMS) {
       if (disposed) return;
-      if (get().uids[platform.id] && !get().data[platform.id].loaded)
+      const meta = get().platformsMeta.find((m) => m.id === platform.id);
+      if (meta && meta.has_credential && !meta.is_alive) continue;
+      if (
+        get().uids[platform.id] &&
+        !get().data[platform.id].loaded &&
+        !get().data[platform.id].error
+      )
         await loadPlatform(platform.id);
     }
     if (!disposed) await loadTimeline({ force: true });

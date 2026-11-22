@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 
+from app.credentials import CredentialManager, _PLATFORM_NAMES
 from app.platforms import get_adapter
 from app.data.store import DataStore
 from app.platforms.base import dataclass_to_dict
@@ -101,16 +102,8 @@ class TimelineBuilder:
 
     SNAPSHOT_TTL = 30 * 60  # 快照有效期（30 分钟），过期快照不再用于实时时间线
 
-    PLATFORM_NAME_MAP = {
-        "netease": "网易云音乐",
-        "bilibili": "哔哩哔哩",
-        "douyin": "抖音",
-        "qqmusic": "QQ音乐",
-        "weibo": "微博",
-        "genshin": "原神",
-        "xhs": "小红书",
-        "github": "GitHub",
-    }
+    # 平台中文名与 credentials 单一事实源保持同步
+    PLATFORM_NAME_MAP = dict(_PLATFORM_NAMES)
 
     # 各平台内容类型标签
     CONTENT_TYPE_MAP = {
@@ -123,6 +116,40 @@ class TimelineBuilder:
         "xhs": "笔记",
         "github": "仓库",
     }
+
+    PLATFORM_ICON_MAP = {
+        "netease": "🎵",
+        "bilibili": "📺",
+        "douyin": "🎶",
+        "qqmusic": "🎵",
+        "weibo": "💬",
+        "genshin": "⚔️",
+        "xhs": "📕",
+        "github": "🐙",
+    }
+
+    @staticmethod
+    def _normalize_ts_ms(raw_ts) -> int:
+        """兼容秒级/毫秒级数字或字符串时间戳，统一归为毫秒级整数"""
+        if raw_ts is None or raw_ts == "":
+            return 0
+        try:
+            ts = int(raw_ts)
+        except (ValueError, TypeError):
+            return 0
+        if ts <= 0:
+            return 0
+        return ts if ts > 1_000_000_000_000 else ts * 1000
+
+    @staticmethod
+    def _format_ts_ms(ts_ms: int) -> str:
+        """毫秒级时间戳 → CST 可读时间字符串（非法返回空串）"""
+        if not ts_ms or ts_ms <= 0:
+            return ""
+        try:
+            return datetime.fromtimestamp(ts_ms / 1000, CST).strftime("%Y.%m.%d %H:%M")
+        except (OSError, OverflowError, ValueError):
+            return ""
 
     @classmethod
     def _is_fresh_snapshot(cls, snap: dict) -> bool:
@@ -142,6 +169,71 @@ class TimelineBuilder:
             return False
 
     @classmethod
+    def _find_fresh_items_snapshot(cls, store: DataStore, platform_id: str, uid: str, data_type: str) -> list[dict]:
+        """查找 30 分钟内带有非空 items 的新鲜快照；无新鲜快照返回空列表"""
+        snaps = store.get_snapshots(platform_id, uid, data_type, limit=5)
+        for snap in snaps:
+            if cls._is_fresh_snapshot(snap) and snap.get("items"):
+                return snap["items"]
+        return []
+
+    @classmethod
+    def _append_event_dicts(
+        cls,
+        entries: list[TimelineEntry],
+        platform_id: str,
+        uid: str,
+        pname: str,
+        event_dicts: list[dict],
+    ) -> int:
+        """统一将动态字典列表（快照或实时拉取）转为 TimelineEntry"""
+        for ev_data in event_dicts:
+            ts = cls._normalize_ts_ms(ev_data.get("timestamp", 0))
+            entries.append(TimelineEntry(
+                timestamp=ts,
+                platform=platform_id,
+                uid=uid,
+                platform_name=pname,
+                event_type=ev_data.get("event_type") or "动态",
+                summary=cls._summarize_snapshot_event(pname, ev_data),
+                detail=ev_data.get("content", ""),
+                time_str=cls._format_ts_ms(ts),
+                time_suffix="",
+                raw={"type": "event", "data": ev_data},
+            ))
+        return len(event_dicts)
+
+    @classmethod
+    def _append_content_dicts(
+        cls,
+        entries: list[TimelineEntry],
+        platform_id: str,
+        uid: str,
+        pname: str,
+        content_label: str,
+        item_dicts: list[dict],
+    ) -> int:
+        """统一将内容字典列表（快照或实时拉取，最多前 10 条）转为 TimelineEntry"""
+        selected = item_dicts[:10]
+        for item in selected:
+            ts = cls._normalize_ts_ms(item.get("create_time", ""))
+            title = item.get("title", item.get("name", "")) or ""
+            view_count = item.get("view_count", item.get("playCount", 0)) or 0
+            entries.append(TimelineEntry(
+                timestamp=ts,
+                platform=platform_id,
+                uid=uid,
+                platform_name=pname,
+                event_type=f"发布{content_label}",
+                summary=f"[{pname}] 发布了{content_label}《{title}》",
+                detail=f"播放 {view_count} 次" if view_count else "",
+                time_str=cls._format_ts_ms(ts),
+                time_suffix="",
+                raw={"type": "content", "data": item},
+            ))
+        return len(selected)
+
+    @classmethod
     def build(
         cls,
         platform_uids: dict[str, str],
@@ -152,8 +244,6 @@ class TimelineBuilder:
         构建统一时间线。
         对听歌记录使用快照对比推断时间。
         """
-        from app.credentials import CredentialManager
-
         entries: list[TimelineEntry] = []
         if store is None:
             store = DataStore()
@@ -173,181 +263,50 @@ class TimelineBuilder:
 
             pname = cls.PLATFORM_NAME_MAP.get(platform_id, platform_id)
             content_label = cls.CONTENT_TYPE_MAP.get(platform_id, "内容")
-            platform_count = 0  # 该平台添加到时间线的条目数
+            platform_count = 0
 
             # ---- 动态事件（非抖音：抖音作品由内容列表处理，避免重复）----
             if platform_id == "douyin":
-                print(f"[Timeline] douyin: 跳过动态（由内容列表代替）")
+                print("[Timeline] douyin: 跳过动态（由内容列表代替）")
             else:
                 try:
-                    all_event_snaps = store.get_snapshots(platform_id, uid, "events", limit=5)
-                    print(f"[Timeline] {platform_id}:{uid} events 快照数={len(all_event_snaps)}")
-                    events_snap = None
-                    for snap in all_event_snaps:
-                        if cls._is_fresh_snapshot(snap) and snap.get("items"):
-                            events_snap = snap
-                            break
-
-                    if events_snap and events_snap.get("items"):
-                        event_count = 0
-                        for ev_data in events_snap["items"]:
-                            ts = ev_data.get("timestamp", 0) or 0
-                            time_str = ""
-                            if ts and ts > 0:
-                                try:
-                                    dt = datetime.fromtimestamp(ts / 1000, CST)
-                                    time_str = dt.strftime("%Y.%m.%d %H:%M")
-                                except (OSError, OverflowError, ValueError):
-                                    time_str = ""
-                            entries.append(TimelineEntry(
-                                timestamp=ts if ts > 0 else 0,
-                                platform=platform_id,
-                                uid=uid,
-                                platform_name=pname,
-                                event_type=ev_data.get("event_type", "动态"),
-                                summary=cls._summarize_snapshot_event(pname, ev_data),
-                                detail=ev_data.get("content", ""),
-                                time_str=time_str,
-                                time_suffix="",
-                                raw={"type": "event", "data": ev_data},
-                            ))
-                            event_count += 1
-                        platform_count += event_count
-                        print(f"[Timeline] {platform_id}:{uid} 动态加入 {event_count} 条（快照）")
+                    snap_items = cls._find_fresh_items_snapshot(store, platform_id, uid, "events")
+                    if snap_items:
+                        added = cls._append_event_dicts(entries, platform_id, uid, pname, snap_items)
+                        source_tag = "快照"
                     else:
-                        events = adapter.get_events(uid, limit=limit_per_platform)
-                        event_count = 0
-                        for ev in events:
-                            ts = ev.timestamp
-                            time_str = ""
-                            if ts and ts > 0:
-                                try:
-                                    dt = datetime.fromtimestamp(ts / 1000, CST)
-                                    time_str = dt.strftime("%Y.%m.%d %H:%M")
-                                except (OSError, OverflowError, ValueError):
-                                    time_str = ""
-                            entries.append(TimelineEntry(
-                                timestamp=ts,
-                                platform=platform_id,
-                                uid=uid,
-                                platform_name=pname,
-                                event_type=ev.event_type,
-                                summary=cls._summarize_event(pname, ev),
-                                detail=ev.content,
-                                time_str=time_str,
-                                time_suffix="",
-                                raw={"type": "event", "data": dataclass_to_dict(ev)},
-                            ))
-                            event_count += 1
-                        platform_count += event_count
-                        print(f"[Timeline] {platform_id}:{uid} 动态加入 {event_count} 条（实时）")
+                        live_events = adapter.get_events(uid, limit=limit_per_platform)
+                        added = cls._append_event_dicts(
+                            entries, platform_id, uid, pname, [dataclass_to_dict(ev) for ev in live_events]
+                        )
+                        source_tag = "实时"
+                    platform_count += added
+                    print(f"[Timeline] {platform_id}:{uid} 动态加入 {added} 条（{source_tag}）")
                 except Exception as e:
                     print(f"[Timeline] {platform_id} 动态获取失败: {e}")
 
-            # ---- 内容发布（歌单/视频/作品）：从 30 分钟内的新鲜快照读取，过期或无快照时实时拉取 ----
+            # ---- 内容发布（歌单/视频/作品/仓库）：优先 30 分钟内新鲜快照，否则实时拉取 ----
             try:
-                all_content_snaps = store.get_snapshots(platform_id, uid, "playlists", limit=5)
-                print(f"[Timeline] {platform_id}:{uid} playlists 快照数={len(all_content_snaps)}")
-                content_snap = None
-                for snap in all_content_snaps:
-                    if cls._is_fresh_snapshot(snap) and snap.get("items"):
-                        content_snap = snap
-                        break
-
-                if content_snap and content_snap.get("items"):
-                    # 从快照读取
-                    added = 0
-                    for item in content_snap["items"][:10]:
-                        ts = 0
-                        create_time = item.get("create_time", "")
-                        if create_time and create_time.isdigit():
-                            raw_ts = int(create_time)
-                            if raw_ts > 1000000000000:
-                                ts = raw_ts
-                            else:
-                                ts = raw_ts * 1000
-                        time_str = ""
-                        if ts and ts > 0:
-                            try:
-                                dt = datetime.fromtimestamp(ts / 1000, CST)
-                                time_str = dt.strftime("%Y.%m.%d %H:%M")
-                            except (OSError, OverflowError, ValueError):
-                                time_str = ""
-
-                        title = item.get("title", item.get("name", ""))
-                        view_count = item.get("view_count", item.get("playCount", 0))
-                        summary = f"[{pname}] 发布了{content_label}《{title}》"
-                        detail = f"播放 {view_count} 次" if view_count else ""
-
-                        entries.append(TimelineEntry(
-                            timestamp=ts,
-                            platform=platform_id,
-                            uid=uid,
-                            platform_name=pname,
-                            event_type=f"发布{content_label}",
-                            summary=summary,
-                            detail=detail,
-                            time_str=time_str,
-                            time_suffix="",
-                            raw={"type": "content", "data": item},
-                        ))
-                        added += 1
+                snap_items = cls._find_fresh_items_snapshot(store, platform_id, uid, "playlists")
+                if snap_items:
+                    added = cls._append_content_dicts(entries, platform_id, uid, pname, content_label, snap_items)
                     platform_count += added
                     print(f"[Timeline] {platform_id}:{uid} 内容加入 {added} 条（快照）")
                 else:
-                    # 快照不存在，实时获取（对抖音等平台首次使用时无快照）
-                    try:
-                        items = adapter.get_content_lists(uid)
-                        if items:
-                            added = 0
-                            for item in items[:10]:
-                                ts = 0
-                                create_time = item.create_time
-                                if create_time and create_time.isdigit():
-                                    raw_ts = int(create_time)
-                                    if raw_ts > 1000000000000:
-                                        ts = raw_ts
-                                    else:
-                                        ts = raw_ts * 1000
-                                time_str = ""
-                                if ts and ts > 0:
-                                    try:
-                                        dt = datetime.fromtimestamp(ts / 1000, CST)
-                                        time_str = dt.strftime("%Y.%m.%d %H:%M")
-                                    except (OSError, OverflowError, ValueError):
-                                        time_str = ""
-
-                                title = item.title or ""
-                                view_count = item.view_count or 0
-                                summary = f"[{pname}] 发布了{content_label}《{title}》"
-                                detail = f"播放 {view_count} 次" if view_count else ""
-
-                                entries.append(TimelineEntry(
-                                    timestamp=ts,
-                                    platform=platform_id,
-                                    uid=uid,
-                                    platform_name=pname,
-                                    event_type=f"发布{content_label}",
-                                    summary=summary,
-                                    detail=detail,
-                                    time_str=time_str,
-                                    time_suffix="",
-                                    raw={"type": "content", "data": {
-                                        "item_id": item.item_id,
-                                        "title": item.title,
-                                        "create_time": item.create_time,
-                                        "view_count": item.view_count,
-                                        "cover_url": item.cover_url,
-                                        "creator": item.creator,
-                                    }},
-                                ))
-                                added += 1
-                            platform_count += added
-                            print(f"[Timeline] {platform_id}:{uid} 内容加入 {added} 条（实时）")
-                        else:
-                            print(f"[Timeline] {platform_id}:{uid} 内容实时拉取为空")
-                    except Exception as e:
-                        print(f"[Timeline] {platform_id}:{uid} 内容实时拉取失败: {e}")
+                    live_items = adapter.get_content_lists(uid)
+                    if live_items:
+                        added = cls._append_content_dicts(
+                            entries,
+                            platform_id,
+                            uid,
+                            pname,
+                            content_label,
+                            [dataclass_to_dict(it) for it in live_items],
+                        )
+                        platform_count += added
+                        print(f"[Timeline] {platform_id}:{uid} 内容加入 {added} 条（实时）")
+                    else:
+                        print(f"[Timeline] {platform_id}:{uid} 内容实时拉取为空")
             except Exception as e:
                 print(f"[Timeline] {platform_id} 内容获取失败: {e}")
 
@@ -641,86 +600,94 @@ class TimelineBuilder:
 
     # ==================== 日志生成 ====================
 
+    @staticmethod
+    def _entry_field(entry, key: str, default=""):
+        """兼容 TimelineEntry 实例与数据库持久化 dict"""
+        if isinstance(entry, dict):
+            val = entry.get(key, default)
+        else:
+            val = getattr(entry, key, default)
+        return default if val is None else val
+
     @classmethod
-    def build_log_text(cls, entries: list[TimelineEntry]) -> str:
-        """将时间线转为纯文本日志"""
+    def build_log_text(cls, entries: list) -> str:
+        """将时间线（TimelineEntry 或 dict 列表）转为纯文本日志"""
         lines = []
         for entry in entries:
-            if entry.time_str:
-                time_part = entry.time_str
-            elif entry.time_suffix and entry.time_suffix.startswith("⏳"):
-                time_part = entry.time_suffix.replace("⏳ 至少从 ", "").replace(" 开始", "")
-            elif entry.time_suffix == "首次采集":
+            time_str = cls._entry_field(entry, "time_str")
+            time_suffix = cls._entry_field(entry, "time_suffix")
+            summary = cls._entry_field(entry, "summary")
+            detail = cls._entry_field(entry, "detail")
+
+            if time_str:
+                time_part = time_str
+            elif time_suffix and time_suffix.startswith("⏳"):
+                time_part = time_suffix.replace("⏳ 至少从 ", "").replace(" 开始", "")
+            elif time_suffix == "首次采集":
                 time_part = "----.--.-- --:--"
             else:
-                time_part = entry.time_suffix or "----.--.--"
+                time_part = time_suffix or "----.--.--"
 
-            line = f"{time_part}  {entry.summary}"
-            if entry.detail:
-                line += f"（{entry.detail}）"
-            if entry.time_suffix and entry.time_suffix not in ("时间未知", ""):
-                line += f"  [{entry.time_suffix}]"
+            line = f"{time_part}  {summary}"
+            if detail:
+                line += f"（{detail}）"
+            if time_suffix and time_suffix not in ("时间未知", ""):
+                line += f"  [{time_suffix}]"
             lines.append(line)
         return "\n".join(lines)
 
     @classmethod
-    def build_log_markdown(cls, entries: list[TimelineEntry]) -> str:
-        """将时间线转为 Markdown 格式"""
+    def build_log_markdown(cls, entries: list, title: str = "# 📊 多平台活动时间线") -> str:
+        """将时间线（TimelineEntry 或 dict 列表）转为 Markdown 格式"""
         now = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
-        lines = ["# 📊 多平台活动时间线", "", f"生成时间: {now}", ""]
+        lines = [title, "", f"生成时间: {now}", ""]
         for entry in entries:
-            icon = {"netease": "🎵", "bilibili": "📺", "douyin": "🎶", "qqmusic": "🎵", "weibo": "💬", "genshin": "⚔️", "xhs": "📕", "github": "🐙"}.get(entry.platform, "📌")
-            if entry.time_str:
-                time_part = f"**{entry.time_str}**"
-            elif entry.time_suffix and entry.time_suffix.startswith("⏳"):
-                since = entry.time_suffix.replace("⏳ 至少从 ", "").replace(" 开始", "")
+            platform = cls._entry_field(entry, "platform")
+            time_str = cls._entry_field(entry, "time_str")
+            time_suffix = cls._entry_field(entry, "time_suffix")
+            summary = cls._entry_field(entry, "summary")
+            detail = cls._entry_field(entry, "detail")
+
+            icon = cls.PLATFORM_ICON_MAP.get(platform, "📌")
+            if time_str:
+                time_part = f"**{time_str}**"
+            elif time_suffix and time_suffix.startswith("⏳"):
+                since = time_suffix.replace("⏳ 至少从 ", "").replace(" 开始", "")
                 time_part = f"**{since}**"
-            elif entry.time_suffix == "首次采集":
+            elif time_suffix == "首次采集":
                 time_part = "**首次采集**"
             else:
-                time_part = f"**{entry.time_suffix or '时间未知'}**"
+                time_part = f"**{time_suffix or '时间未知'}**"
 
-            line = f"- {time_part} {icon} {entry.summary}"
-            if entry.detail:
-                line += f"（{entry.detail}）"
-            if entry.time_suffix and entry.time_suffix not in ("时间未知", ""):
-                line += f" _{entry.time_suffix}_"
+            line = f"- {time_part} {icon} {summary}"
+            if detail:
+                line += f"（{detail}）"
+            if time_suffix and time_suffix not in ("时间未知", ""):
+                line += f" _{time_suffix}_"
             lines.append(line)
         return "\n".join(lines)
 
     @staticmethod
     def _summarize_snapshot_event(platform_name: str, data: dict) -> str:
-        """从快照数据生成活动摘要"""
+        """从事件字典生成活动摘要"""
         prefix = f"[{platform_name}]"
-        action = data.get("event_type", "动态")
-        content_preview = (data.get("content", "") or "")[:100]
-        media_title = data.get("media_title", "")
-        media_artist = data.get("media_artist", "")
+        action = data.get("event_type") or "动态"
+        content_preview = (data.get("content") or "")[:100]
+        media_title = data.get("media_title") or ""
+        media_artist = data.get("media_artist") or ""
 
         if media_title and content_preview:
             return f"{prefix} {action}：{content_preview}（《{media_title}》）"
-        elif content_preview:
+        if content_preview:
             return f"{prefix} {action}：{content_preview}"
-        elif media_title:
+        if media_title:
             artist_str = f" - {media_artist}" if media_artist else ""
             return f"{prefix} {action}了《{media_title}》{artist_str}"
-        else:
-            return f"{prefix} {action}"
+        return f"{prefix} {action}"
 
-    @staticmethod
-    def _summarize_event(platform_name: str, event) -> str:
-        """生成活动摘要"""
-        prefix = f"[{platform_name}]"
-        action = event.event_type or "动态"
-        content_preview = (event.content or "")[:100]
-
-        if event.media_title and event.content:
-            return f"{prefix} {action}：{content_preview}（《{event.media_title}》）"
-        elif event.content:
-            return f"{prefix} {action}：{content_preview}"
-        elif event.media_title:
-            return f"{prefix} {action}了《{event.media_title}》"
-        else:
-            return f"{prefix} {action}"
+    @classmethod
+    def _summarize_event(cls, platform_name: str, event) -> str:
+        """兼容 EventItem 对象的活动摘要生成"""
+        return cls._summarize_snapshot_event(platform_name, dataclass_to_dict(event))
 
 

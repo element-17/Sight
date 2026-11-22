@@ -347,6 +347,29 @@ class QQMusicAdapter(BasePlatformAdapter):
                 last_error = f"HTTP {resp.status_code}"
         raise RuntimeError(f"[QQ音乐] 页面请求失败: {last_error}, url={url[:80]}")
 
+    def _cache_user_entry(self, info: dict, encrypt_uin: str = "", raw_uin: str = ""):
+        """统一写入用户搜索/资料缓存，同时索引 encrypt_uin 及其去除 ** 的键"""
+        cache_key = encrypt_uin or raw_uin
+        if not cache_key:
+            return
+        self._user_cache[cache_key] = info
+        if encrypt_uin:
+            clean = encrypt_uin.rstrip("*")
+            if clean and clean != encrypt_uin:
+                self._user_cache[clean] = info
+
+    def _get_ssr_page_data(self, uid: str) -> Optional[dict]:
+        """拉取并解码手机版 SSR 页面中的 homeData.data 节点（30 秒页面缓存）"""
+        html = self._fetch_ssr_page(uid)
+        if not html:
+            return None
+        raw = self._extract_js_string(html, "__ssrFirstPageData__")
+        if not raw:
+            return None
+        data = self._decode_ssr_payload(raw)
+        home_data = data.get("homeData", {})
+        return home_data.get("data", {}) if isinstance(home_data, dict) else {}
+
     def _fetch_ssr_page(self, uid: str) -> str:
         """
         获取并缓存 SSR 页面内容。
@@ -460,21 +483,18 @@ class QQMusicAdapter(BasePlatformAdapter):
                     "extra": {"uin": raw_uin, "encrypt_uin": encrypt_uin},
                 })
                 # 缓存用户信息，供 get_profile 和 get_follows/get_followers 查询
-                cache_key = encrypt_uin if encrypt_uin else raw_uin
-                if cache_key:
-                    self._user_cache[cache_key] = {
+                self._cache_user_entry(
+                    {
                         "nickname": nick,
                         "avatar_url": avatar,
                         "signature": sign,
                         "encrypt_uin": encrypt_uin,
-                        "uin": raw_uin,  # 保存原始 uin（可能是空字符串）
+                        "uin": raw_uin,
                         "type": field,
-                    }
-                    # 也缓存不带 ** 的版本
-                    if encrypt_uin:
-                        clean = encrypt_uin.rstrip("*")
-                        if clean and clean != encrypt_uin:
-                            self._user_cache[clean] = self._user_cache[encrypt_uin]
+                    },
+                    encrypt_uin=encrypt_uin,
+                    raw_uin=raw_uin,
+                )
 
         if users:
             print(f"[QQ音乐] musicu.fcg 搜索 → {len(users)} 个用户")
@@ -596,18 +616,10 @@ class QQMusicAdapter(BasePlatformAdapter):
             return None
 
         try:
-            html = self._fetch_ssr_page(uid)
-            if not html:
+            page_data = self._get_ssr_page_data(uid)
+            if not page_data:
                 return None
 
-            raw = self._extract_js_string(html, "__ssrFirstPageData__")
-            if not raw:
-                return None
-
-            data = self._decode_ssr_payload(raw)
-
-            home_data = data.get("homeData", {})
-            page_data = home_data.get("data", {}) if isinstance(home_data, dict) else {}
             info = page_data.get("Info", {})
             base = info.get("BaseInfo", {}) if isinstance(info, dict) else {}
 
@@ -631,22 +643,23 @@ class QQMusicAdapter(BasePlatformAdapter):
                         gender = 2
 
             extra = {"uin": uid, "source": "mobile_ssr", "encrypt_uin": encrypt_uin}
-            # 访客/粉丝/关注/朋友数 (SSR 页面统计信息)
             if isinstance(info, dict):
                 for k in ("VisitorNum", "FansNum", "FriendsNum", "FollowNum"):
                     v = info.get(k, {})
                     if isinstance(v, dict) and v.get("Num"):
                         extra[f"m{k}"] = v.get("Num")
 
-            # 缓存
             if encrypt_uin:
-                self._user_cache[encrypt_uin] = {
-                    "nickname": nickname, "avatar_url": avatar or big_avatar,
-                    "signature": "", "encrypt_uin": encrypt_uin, "type": "user",
-                }
-                clean = encrypt_uin.rstrip("*")
-                if clean and clean != encrypt_uin:
-                    self._user_cache[clean] = self._user_cache[encrypt_uin]
+                self._cache_user_entry(
+                    {
+                        "nickname": nickname,
+                        "avatar_url": avatar or big_avatar,
+                        "signature": "",
+                        "encrypt_uin": encrypt_uin,
+                        "type": "user",
+                    },
+                    encrypt_uin=encrypt_uin,
+                )
 
             return PlatformProfile(
                 platform="qqmusic", uid=uid, nickname=nickname,
@@ -677,18 +690,10 @@ class QQMusicAdapter(BasePlatformAdapter):
         seen = set()
 
         try:
-            html = self._fetch_ssr_page(uid)
-            if not html:
+            page_data = self._get_ssr_page_data(uid)
+            if not page_data:
                 return []
 
-            raw = self._extract_js_string(html, "__ssrFirstPageData__")
-            if not raw:
-                return []
-
-            data = self._decode_ssr_payload(raw)
-
-            home_data = data.get("homeData", {})
-            page_data = home_data.get("data", {}) if isinstance(home_data, dict) else {}
             tab_detail = page_data.get("TabDetail", {}) if isinstance(page_data, dict) else {}
             intro_tab = tab_detail.get("IntroductionTab", {}) if isinstance(tab_detail, dict) else {}
             intro_list = intro_tab.get("List", []) if isinstance(intro_tab, dict) else []
@@ -989,17 +994,18 @@ class QQMusicAdapter(BasePlatformAdapter):
 
         # 缓存发现的真实 QQ 号，供后续查询
         if uin.isdigit() and encrypt_uin:
-            self._user_cache[encrypt_uin] = {
-                "nickname": nick,
-                "avatar_url": logo,
-                "signature": item.get("desc", "")[:200] if item.get("desc") else "",
-                "encrypt_uin": encrypt_uin,
-                "uin": uin,
-                "type": "user",
-            }
-            clean = encrypt_uin.rstrip("*")
-            if clean and clean != encrypt_uin:
-                self._user_cache[clean] = self._user_cache[encrypt_uin]
+            self._cache_user_entry(
+                {
+                    "nickname": nick,
+                    "avatar_url": logo,
+                    "signature": item.get("desc", "")[:200] if item.get("desc") else "",
+                    "encrypt_uin": encrypt_uin,
+                    "uin": uin,
+                    "type": "user",
+                },
+                encrypt_uin=encrypt_uin,
+                raw_uin=uin,
+            )
 
         return {
             "uid": uid,
@@ -1065,15 +1071,9 @@ class QQMusicAdapter(BasePlatformAdapter):
             数字或 None
         """
         try:
-            html = self._fetch_ssr_page(uid)
-            if not html:
+            page_data = self._get_ssr_page_data(uid)
+            if not page_data:
                 return None
-            raw = self._extract_js_string(html, "__ssrFirstPageData__")
-            if not raw:
-                return None
-            data = self._decode_ssr_payload(raw)
-            home_data = data.get("homeData", {})
-            page_data = home_data.get("data", {}) if isinstance(home_data, dict) else {}
             info = page_data.get("Info", {}) if isinstance(page_data, dict) else {}
             v = info.get(field, {})
             if isinstance(v, dict):

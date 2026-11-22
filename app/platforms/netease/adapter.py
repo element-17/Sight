@@ -38,22 +38,31 @@ class NeteaseAdapter(BasePlatformAdapter):
     # ==================== 状态检查 ====================
 
     def check_alive(self) -> bool:
-        user = self._get_login_user_raw()
-        return bool(user.get("userId"))
+        try:
+            user = self._get_login_user_raw()
+            return bool(user.get("userId"))
+        except Exception:
+            return False
 
     def get_login_user(self) -> Optional[dict]:
-        user = self._get_login_user_raw()
-        if user.get("userId"):
-            return {
-                "uid": str(user["userId"]),
-                "nickname": user.get("nickname", ""),
-                "avatarUrl": user.get("avatarUrl", ""),
-            }
+        try:
+            user = self._get_login_user_raw()
+            if user.get("userId"):
+                return {
+                    "uid": str(user["userId"]),
+                    "nickname": user.get("nickname", ""),
+                    "avatarUrl": user.get("avatarUrl", ""),
+                }
+        except Exception:
+            pass
         return None
 
     def _get_login_user_raw(self) -> dict:
         resp = self._client.api_get("/api/nuser/account/get")
-        return resp.get("profile", {})
+        if not isinstance(resp, dict):
+            return {}
+        profile = resp.get("profile")
+        return profile if isinstance(profile, dict) else {}
 
     # ==================== 用户搜索 ====================
 
@@ -122,10 +131,11 @@ class NeteaseAdapter(BasePlatformAdapter):
     # ==================== 歌单 ====================
 
     def get_content_lists(self, uid: str) -> list[ContentItem]:
-        """获取歌单列表（翻页直到没有更多）"""
+        """获取歌单列表（翻页直到没有更多，设页数上限防死循环）"""
         result = []
         offset = 0
-        while True:
+        max_pages = 10
+        for _ in range(max_pages):
             resp = self._client.weapi_post("/weapi/user/playlist", {
                 "uid": uid,
                 "limit": 100,

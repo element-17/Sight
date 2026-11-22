@@ -88,6 +88,28 @@ describe("application state", () => {
     ]);
     expect(store.useAppStore.getState().data.weibo.loaded).toBe(true);
   });
+  it("does not auto-retry a failed platform on tab switch until explicitly forced", async () => {
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: -1, message: "[微博] 登录态已失效" }), {
+          status: 500,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const store = await import("../../src/store");
+    store.useAppStore.setState((s) => ({
+      uids: { ...s.uids, weibo: "6136329850" },
+    }));
+    await store.loadPlatform("weibo");
+    expect(store.useAppStore.getState().data.weibo.error).toContain("登录态已失效");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    store.setView("douyin");
+    store.setView("weibo");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await store.loadPlatform("weibo", { force: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("does not mix live and stored timeline responses", async () => {
     const live = deferred<Response>();
     vi.stubGlobal(

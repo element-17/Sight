@@ -292,6 +292,11 @@ class NeteaseScrapingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "登录态已失效"):
             self.adapter.get_followers("1001")
 
+    def test_check_alive_handles_null_profile_without_crashing(self):
+        self.client_mock.api_get.return_value = {"code": 200, "account": None, "profile": None}
+        self.assertFalse(self.adapter.check_alive())
+        self.assertIsNone(self.adapter.get_login_user())
+
 
 class BilibiliScrapingTests(unittest.TestCase):
     """哔哩哔哩抓取功能测试"""
@@ -1112,7 +1117,7 @@ class AllPlatformsRestAggregationTests(unittest.TestCase):
     def setUp(self):
         from app.routes import api as api_module
 
-        self.tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
         self.store = DataStore(db_path=Path(self.tmpdir.name) / "test_sight.db")
         self.store_patch = patch.object(api_module, "_store", self.store)
@@ -1223,6 +1228,30 @@ class AllPlatformsRestAggregationTests(unittest.TestCase):
             self.assertEqual(res.json["code"], -1)
             self.assertIn("登录凭证已失效", res.json["message"])
 
+    def test_all_endpoint_fails_fast_on_first_auth_expired_module(self):
+        adapter = get_adapter("weibo")
+        with patch.object(
+            adapter,
+            "get_profile",
+            side_effect=RuntimeError("[微博] 登录态已失效，请更新 Cookie"),
+        ), patch.object(
+            adapter, "get_content_lists"
+        ) as mock_pl, patch.object(
+            adapter, "get_events"
+        ) as mock_ev, patch.object(
+            adapter, "get_follows"
+        ) as mock_fl, patch.object(
+            adapter, "get_followers"
+        ) as mock_fwr:
+            res = self.client.get("/api/weibo/all?uid=6136329850&refresh=1")
+            self.assertEqual(res.status_code, 500)
+            self.assertEqual(res.json["code"], -1)
+            self.assertIn("登录凭证已失效", res.json["message"])
+            mock_pl.assert_not_called()
+            mock_ev.assert_not_called()
+            mock_fl.assert_not_called()
+            mock_fwr.assert_not_called()
+
     def test_timeline_ignores_expired_snapshots_and_invalid_cookies(self):
         # 写入一条 2 个月前的过期快照
         with self.store._connect() as conn:
@@ -1256,6 +1285,36 @@ class AllPlatformsRestAggregationTests(unittest.TestCase):
              patch.object(adapter, "check_alive", return_value=False):
             entries = TimelineBuilder.build({"xhs": "u_stale"}, store=self.store)
             self.assertEqual(entries, [])
+
+    def test_timeline_stored_text_and_markdown_export(self):
+        from app.services.timeline import TimelineEntry
+
+        self.store.insert_timeline_entries(
+            [
+                TimelineEntry(
+                    platform="github",
+                    uid="torvalds",
+                    event_type="PushEvent",
+                    timestamp=1700000000000,
+                    time_str="2023-11-15 06:13",
+                    summary="在 GitHub 推送了提交",
+                    detail="linux",
+                )
+            ]
+        )
+
+        res_text = self.client.get("/api/timeline?uids=github:torvalds&source=stored&format=text")
+        self.assertEqual(res_text.status_code, 200)
+        self.assertEqual(res_text.json["code"], 200)
+        self.assertIn("在 GitHub 推送了提交", res_text.json["data"]["timeline"])
+
+        res_md = self.client.get("/api/timeline?uids=github:torvalds&source=stored&format=markdown")
+        self.assertEqual(res_md.status_code, 200)
+        self.assertEqual(res_md.json["code"], 200)
+        md_body = res_md.json["data"]["timeline"]
+        self.assertIn("多平台活动时间线", md_body)
+        self.assertIn("GitHub", md_body)
+        self.assertIn("在 GitHub 推送了提交", md_body)
 
 
 if __name__ == "__main__":
