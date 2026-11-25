@@ -24,8 +24,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterator, Optional
 
-# 数据库路径
-DB_DIR = Path(__file__).parent.parent.parent / "data"
+from app.paths import get_runtime_dir
+
+# 数据库路径（源码运行在项目根目录；打包运行在可执行文件同级目录）
+DB_DIR = get_runtime_dir() / "data"
 DB_PATH = DB_DIR / "snapshots.db"
 
 # 北京时间

@@ -6,20 +6,25 @@ import os
 import sys
 import io
 
-# 修复 Windows 终端 GBK 编码问题
+# 修复 Windows 终端 GBK 编码问题（兼容打包后无 buffer 或已是 UTF-8 的场景）
 if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+    if getattr(sys.stdout, "buffer", None) is not None and (getattr(sys.stdout, "encoding", "") or "").lower() != "utf-8":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if getattr(sys.stderr, "buffer", None) is not None and (getattr(sys.stderr, "encoding", "") or "").lower() != "utf-8":
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from flask import Flask
+
+from app.paths import get_bundle_dir
 
 
 def create_app() -> Flask:
     """创建并配置 Flask 应用"""
+    web_dir = get_bundle_dir() / "app" / "web"
     app = Flask(
         __name__,
-        static_folder="web",      # Vite 构建产物目录（frontend/ 执行 npm run build 生成）
-        static_url_path="",       # 静态资源挂根路径：/assets/...、/favicon.svg
+        static_folder=str(web_dir),  # Vite 构建产物目录（frontend/ 执行 npm run build 生成）
+        static_url_path="",          # 静态资源挂根路径：/assets/...、/favicon.svg
     )
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
 

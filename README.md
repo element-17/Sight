@@ -7,6 +7,8 @@
 *Multi-Platform Public Entity Profiling, Timeline Diffing & Social Graph Analytics Platform*
 
 [![CI](https://img.shields.io/github/actions/workflow/status/element-17/Sight/ci.yml?branch=master&style=flat-square&logo=githubactions&logoColor=white&label=CI)](https://github.com/element-17/Sight/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/element-17/Sight?style=flat-square&logo=github&logoColor=white&label=Release)](https://github.com/element-17/Sight/releases)
+[![Auto Release](https://img.shields.io/github/actions/workflow/status/element-17/Sight/release.yml?branch=master&style=flat-square&logo=githubactions&logoColor=white&label=Auto%20Release)](https://github.com/element-17/Sight/actions/workflows/release.yml)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.1%2B-000000?style=flat-square&logo=flask&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
@@ -99,12 +101,24 @@ flowchart TD
 
 ## 快速开始
 
-### 环境要求
+### 方式一：直接下载预打包独立可执行版（推荐，免装 Python）
+
+前往 [GitHub Releases](https://github.com/element-17/Sight/releases/latest) 下载对应系统压缩包，解压后直接运行即可（默认自动打开浏览器并监听 `http://127.0.0.1:5001`）：
+
+- **Windows (x64)**：`Sight-v*-windows-x64.zip` → 双击 `Sight.exe`（或 `start.bat`）
+- **macOS (Apple Silicon)**：`Sight-v*-macos-arm64.tar.gz` → 运行 `./Sight` 或双击 `start.command`
+- **Linux (x64)**：`Sight-v*-linux-x64.tar.gz` → 运行 `./Sight` 或 `./start.sh`
+
+> 凭证 (`credentials/`)、SQLite 数据库 (`data/`) 与日志 (`logs/`) 默认保存在可执行文件同级目录，也可通过 `SIGHT_DATA_DIR` 环境变量自定义；支持 `--port` / `--host` / `--no-browser` 参数。小红书与抖音部分 JS 签名接口需本机安装 Node.js 22+，其余平台零外部依赖。
+
+### 方式二：源码运行
+
+#### 环境要求
 
 - **Python** `3.10+`
 - **Node.js** `22.12+`（前端构建与运行时依赖）
 
-### 启动后端与托管界面
+#### 启动后端与托管界面
 
 ```bash
 python -m venv .venv
@@ -124,6 +138,14 @@ npm test                        # Vitest 单元测试
 npm run test:e2e                # Playwright 端到端测试
 npm run build                   # 构建生产产物至 app/web/
 ```
+
+### 自动打包与发版（CI/CD）
+
+本项目通过 [`.github/workflows/release.yml`](.github/workflows/release.yml) 实现自动测试、跨平台打包与 Release 发布：
+
+- **自动发版**：每次推送到 `master` 分支时，CI 自动运行后端单测、前端类型检查/单元测试/构建与 Playwright E2E 测试，随后在 Windows、macOS、Linux 三端使用 PyInstaller 打包独立可执行程序并执行真实启动冒烟测试，全部通过后自动创建版本标签、生成分组 Changelog 与 `SHA256SUMS.txt` 并发布 GitHub Release。
+- **语义化版本规则**：基于 Conventional Commits 自动递增——含 `BREAKING CHANGE:` / `!:` 升主版本，含 `feat:` 升次版本，其余提交升修订号（如 `v0.1.0 → v0.2.0 / v0.2.1`）。
+- **按需控制**：在提交信息中加入 `[skip release]` 可跳过本次发版；也可推送 `v*.*.*` 标签或直接在 GitHub Actions 页面手动触发（支持自定义版本号、预发布标记与 `dry_run` 演练模式）。
 
 ---
 

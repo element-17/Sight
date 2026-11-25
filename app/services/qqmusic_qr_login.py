@@ -17,7 +17,9 @@ import time
 import threading
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+from app.paths import get_runtime_dir, is_frozen
+
+BASE_DIR = get_runtime_dir()
 TMP_DIR = BASE_DIR / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -50,6 +52,11 @@ class QRLoginSession:
 
     def start(self, target_uid: str = "oK6kowEAoK4z7Knioivl7evl7n**") -> dict:
         """启动子进程执行 QR 登录"""
+        if is_frozen():
+            return {
+                "status": "error",
+                "error": "独立可执行包未内置 Playwright 扫码环境，请在面板「配置凭证」中手动粘贴 QQ 音乐 Cookie",
+            }
         with self._lock:
             if self._process and self._process.poll() is None:
                 return {"status": "already_running"}

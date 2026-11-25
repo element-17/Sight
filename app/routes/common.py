@@ -13,12 +13,13 @@ from flask import Blueprint, jsonify, request
 
 from app.config import DEFAULT_PLATFORM, DEFAULT_TARGET_UID
 from app.data.store import DataStore
+from app.paths import get_runtime_dir
 from app.platforms import get_adapter
 from app.services.log_hub import get_log_hub
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
-LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+LOG_DIR = get_runtime_dir() / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 CST = timezone(timedelta(hours=8))
 

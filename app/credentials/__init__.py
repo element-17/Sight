@@ -16,8 +16,10 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-# credentials 目录（项目根目录下）
-CREDENTIALS_DIR = Path(__file__).parent.parent.parent / "credentials"
+from app.paths import get_runtime_dir
+
+# credentials 目录（源码运行在项目根目录；打包运行在可执行文件同级目录）
+CREDENTIALS_DIR = get_runtime_dir() / "credentials"
 
 # 凭证存储文件（唯一事实源）
 ACCOUNTS_FILE = CREDENTIALS_DIR / "accounts.json"

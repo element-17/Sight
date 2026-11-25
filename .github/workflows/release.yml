@@ -1,0 +1,270 @@
+name: Sight Auto Build & Release
+
+on:
+  push:
+    branches: [master, main]
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "手动指定版本号（留空则按提交历史自动语义递增，例如 v0.2.0）"
+        required: false
+        default: ""
+        type: string
+      prerelease:
+        description: "标记为预发布版本 (Pre-release)"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "演练模式：仅执行测试、全平台打包与冒烟验证，不发布 GitHub Release"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: sight-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan-release:
+    name: Compute Next Version & Release Notes
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.plan.outputs.should_release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      prev_tag: ${{ steps.plan.outputs.prev_tag }}
+      bump: ${{ steps.plan.outputs.bump }}
+      skip_reason: ${{ steps.plan.outputs.skip_reason }}
+    steps:
+      - name: Checkout full git history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute release plan and generate changelog
+        id: plan
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            EVENT="workflow_dispatch"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            EVENT="tag"
+          else
+            EVENT="push"
+          fi
+
+          python scripts/next_version.py \
+            --event "$EVENT" \
+            --ref-name "${{ github.ref_name }}" \
+            --manual-version "${{ inputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --notes-file release_notes.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload generated release notes
+        if: steps.plan.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+          retention-days: 3
+
+      - name: Report skip summary
+        if: steps.plan.outputs.should_release != 'true'
+        shell: bash
+        run: |
+          echo "### ⏭️ 跳过本次发版" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 原因：${{ steps.plan.outputs.skip_reason }}" >> "$GITHUB_STEP_SUMMARY"
+
+  verify-and-build-frontend:
+    name: Run Tests & Build Production Frontend
+    needs: [plan-release]
+    if: needs.plan-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backend unit & contract tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend typecheck, unit tests & production build
+        working-directory: frontend
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Install Playwright Chromium & run E2E tests
+        working-directory: frontend
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
+      - name: Upload built frontend bundle (app/web)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sight-web-dist
+          path: app/web
+          retention-days: 1
+
+  package:
+    name: Package Standalone Bundle (${{ matrix.name }})
+    needs: [plan-release, verify-and-build-frontend]
+    if: needs.plan-release.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          - name: macos-arm64
+            os: macos-latest
+          - name: linux-x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built frontend bundle (app/web)
+        uses: actions/download-artifact@v4
+        with:
+          name: sight-web-dist
+          path: app/web
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install runtime dependencies and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Build standalone executable archive
+        id: build
+        run: |
+          python scripts/build_release.py --version "${{ needs.plan-release.outputs.tag }}" --skip-frontend --output-dir release
+
+      - name: Smoke test packaged executable
+        run: |
+          python scripts/smoke_test_bundle.py --bundle-dir dist/Sight --expected-version "${{ needs.plan-release.outputs.tag }}"
+
+      - name: Upload packaged release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-${{ matrix.name }}
+          path: release/Sight-*
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [plan-release, package]
+    if: needs.plan-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-*
+          path: release
+          merge-multiple: true
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: .
+
+      - name: Generate SHA256SUMS.txt
+        shell: bash
+        run: |
+          ls -lh release/
+          (cd release && sha256sum Sight-* > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        if: inputs.dry_run != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan-release.outputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          PRERELEASE_ARGS=()
+          if [ "$IS_PRERELEASE" = "true" ] || [[ "$TAG" == *-* ]]; then
+            PRERELEASE_ARGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading refreshed assets..."
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --title "Sight $TAG" --notes-file release_notes.md "${PRERELEASE_ARGS[@]}"
+          else
+            gh release create "$TAG" release/* \
+              --target "$TARGET_SHA" \
+              --title "Sight $TAG" \
+              --notes-file release_notes.md \
+              "${PRERELEASE_ARGS[@]}"
+          fi
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          TAG="${{ needs.plan-release.outputs.tag }}"
+          {
+            echo "### 🚀 Sight $TAG"
+            echo ""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "> **演练模式 (Dry Run)**：已完成测试、三端打包与冒烟验证，未创建正式 Release。"
+            else
+              echo "- **Release 地址**：https://github.com/${{ github.repository }}/releases/tag/$TAG"
+            fi
+            echo "- **版本递进**：\`${{ needs.plan-release.outputs.prev_tag || '(initial)' }}\` → \`$TAG\` (\`${{ needs.plan-release.outputs.bump }}\`)"
+            echo ""
+            echo "#### SHA-256 校验和"
+            echo '```text'
+            cat release/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
