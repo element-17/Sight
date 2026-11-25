@@ -1,68 +1,63 @@
+<div align="center">
+
 # Sight
 
-这是一个基于视奸对象在各平台公开数据进行一系列推理排查的项目,核心思想是利用看似无关紧要的数据形成对该视奸对象及其社交网络的全面认知
+**多源公开实体画像与社交关系图谱分析平台**
 
-- **功能一**：直接查询对象在各平台的公开数据（基本基于其他开源项目的手段）
-- **功能二**：通过对比不同时间对象在各平台的公开数据，推测对象一段时间内的行为
-- **功能三**：通过分析对象在各平台的公开数据，生成社交网络关系图谱
-- **功能四**（开发中）：接入agent生成一站式的人物形象侧写
+*Multi-Platform Public Entity Profiling, Timeline Diffing & Social Graph Analytics Platform*
 
-目前支持的平台有：网易云音乐、哔哩哔哩、抖音、QQ音乐、微博、原神、小红书、GitHub
-## 快速开始
+[![CI](https://img.shields.io/github/actions/workflow/status/element-17/Sight/ci.yml?branch=master&style=flat-square&logo=githubactions&logoColor=white&label=CI)](https://github.com/element-17/Sight/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Flask](https://img.shields.io/badge/Flask-3.1%2B-000000?style=flat-square&logo=flask&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white)
+![ECharts](https://img.shields.io/badge/ECharts-6-AA344D?style=flat-square&logo=apacheecharts&logoColor=white)
+![Zustand](https://img.shields.io/badge/Zustand-5-443E38?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite-Snapshot%20Store-003B57?style=flat-square&logo=sqlite&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-Vitest%20%2B%20Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white)
 
-环境要求：Python 3.10+，Node.js 22.12+（前端构建与抖音签名）。
+</div>
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows；macOS/Linux 用 source .venv/bin/activate
-pip install -r requirements.txt
-python run.py                   # 监听 http://127.0.0.1:5001
-```
+---
 
-前端二次开发：
+## 项目简介
 
-```bash
-cd frontend
-npm install
-npm run dev       # Vite 开发服务器，默认 5173
-npm run build     # 构建到 app/web/，由 Flask 托管
-```
+**Sight** 是一个面向多平台公开数据的**实体信息聚合、行为时序演化分析与社交关系图谱可视化平台**。通过统一的平台适配器架构，将分散在各公开社区与内容平台中的碎片化公开信息整合为可追溯、可对比、可交互的结构化视图，适用于开源开发者调研、创作者公开档案分析与跨平台关系网络研究。
 
-## Cookie 配置
+### 核心能力
 
-所有凭证统一存储在 `credentials/accounts.json`。
-推荐在面板中配置：图谱页平台状态条 →「配置 Cookie」粘贴即可，主账号与多账号（并发加速）在同一弹窗管理。
+- **多源公开数据聚合**：抽象统一 `Adapter` 契约与 `AdapterPool` 多凭证租借轮询池，支持 8 个公开平台的实体检索与聚合查询，配合 30 分钟快照 TTL 与内容哈希去重机制降低重复请求与表膨胀。
+- **时序快照 Diff 与行为演化时间线**：持久化各时间节点的公开状态快照，通过逐对集合 Diff 自动推断跨时段变更窗口，并以 `dedup_key` 幂等落库，支持统一时间线检索与导出。
+- **交互式社交关系图谱**：后端按平台隔离异步展开队列（内置速率限制、连续失败 5 次自动熔断与 `skip` 断点续拉），前端基于 **ECharts 6** 增量轮询并动态渲染实体关联网络。
+- **实时运行终端（SSE）**：通过 `log_hub` 环形缓冲实时镜像后端任务与适配器运行状态，借助 Server-Sent Events 推送至前端可视化终端。
+- **AI Agent 智能实体侧写（Roadmap）**：规划将平台检索、时序对比与图谱扩展封装为标准 Agent Tools，结合证据溯源自动生成一站式结构化实体画像报告。
 
-也可以手动编辑 `credentials/accounts.json`，每个平台是一个账号数组：
+---
 
-```json
-{
-  "netease": [
-    { "id": "primary", "name": "主账号", "cookie": "k=v; k2=v2", "enabled": true },
-    { "id": "acc_xxx", "name": "账号2", "cookie": "k=v", "enabled": true }
-  ]
-}
-```
+## 支持平台
 
-- `id` 为 `primary` 的是主账号（历史记录等私有数据接口固定使用，不可删除），其余为附加账号
-- `enabled: false` 可把账号移出多账号轮询（不删除凭证）
-- Cookie 内容在下次请求时生效；增删账号建议走面板（会同步重建账号池）
+| 类别 | 已集成公开平台 |
+| :--- | :--- |
+| 开源与技术社区 | GitHub |
+| 影音与内容社区 | 哔哩哔哩、抖音、小红书、微博 |
+| 音乐与兴趣社区 | 网易云音乐、QQ 音乐、原神 |
 
-未配置 Cookie 也能启动，但对应平台功能会受限。小红书 Cookie 可能过期，需要重新获取。
+---
 
 ## 架构与数据流
 
 ```mermaid
 flowchart LR
-    UI["前端 React + TypeScript + ECharts<br/>平台视图 / 时间线 / 图谱 / 终端"]
-    API["routes/api.py<br/>REST + SSE 唯一入口"]
-    POOL["AdapterPool<br/>多账号租借轮询"]
+    UI["前端 React 19 + TypeScript + ECharts 6<br/>平台视图 / 时间线 / 关系图谱 / 实时终端"]
+    API["routes/api.py<br/>REST + SSE 统一入口"]
+    POOL["AdapterPool<br/>多凭证租借轮询池"]
     ADP["平台适配器 ×8"]
     CRED["credentials/accounts.json"]
-    NET["各平台公开接口<br/>含移植签名栈 ref_*"]
+    NET["多平台公开接口"]
     SVC["services<br/>timeline / social_expander / expand_queue"]
-    DB["data/store.py<br/>SQLite"]
-    LOG["log_hub<br/>print → 环形缓冲 → SSE"]
+    DB["data/store.py<br/>SQLite 持久化"]
+    LOG["log_hub<br/>环形缓冲 → SSE"]
 
     UI -->|HTTP / SSE| API
     API --> POOL
@@ -77,82 +72,118 @@ flowchart LR
     LOG --> UI
 ```
 
-一次查询的工作流：
+### 核心查询与图谱展开流程
 
 ```mermaid
 flowchart TD
-    S["用户输入：关键词 / UID"] --> SE["适配器 search_user 搜索"]
+    S["用户输入：关键词 / UID"] --> SE["适配器 search_user 跨平台检索"]
     S --> ALL["GET /api/{platform}/all 聚合拉取"]
-    ALL --> FRESH{"SQLite 里快照<br/>30 分钟内？"}
+    ALL --> FRESH{"SQLite 快照在<br/>30 分钟 TTL 内？"}
     FRESH -->|是| REUSE["直接复用快照"]
-    FRESH -->|否| PULL["账号池租借适配器实时拉取"]
+    FRESH -->|否| PULL["AdapterPool 租借凭证实时拉取"]
     PULL --> HASH{"内容哈希 == 上次快照？"}
-    HASH -->|是| MARK["只存标记，防表膨胀"]
+    HASH -->|是| MARK["仅更新校验标记，防止表膨胀"]
     HASH -->|否| WRITE["写入新快照"]
-    REUSE --> VIEW["平台视图"]
+    REUSE --> VIEW["平台视图展示"]
     WRITE --> VIEW
-    WRITE --> TL["timeline：逐对快照集合 diff<br/>推断变化时间窗口，dedup_key 幂等落库"]
-    S --> G["图谱：跨平台搜索归并为图"]
-    G --> Q["展开任务入队：按平台隔离队列<br/>限速 + 连续失败 5 次熔断 + 断点恢复"]
-    Q --> FF["关注/粉丝增量拉取（skip 续拉）"]
-    FF --> DB["结果落库"]
-    DB --> P["前端增量轮询合并进图"]
+    WRITE --> TL["timeline：逐对快照集合 Diff<br/>推断变更时间窗口并幂等落库"]
+    S --> G["关系图谱：跨平台实体归并"]
+    G --> Q["异步展开队列：按平台隔离<br/>限速 + 连续失败 5 次熔断 + 断点续拉"]
+    Q --> FF["关注 / 粉丝关系增量拉取"]
+    FF --> DB["节点与边落库"]
+    DB --> P["前端增量轮询并合入图谱"]
     P -.-> G
 ```
 
-关键约定与接入新平台的完整约束见 [`docs/MANUAL.md`](docs/MANUAL.md)：
+---
 
-- 适配器与服务层失败一律 `raise`（带平台前缀/账号标签/风控码），不返回空值伪装成功；唯一转 JSON 的边界在 REST 层
-- `frontend/src/platforms.ts` 与适配器返回字段严格对应，改一边要同步另一边
-- 移植代码的上游同步范围见 [`docs/MANUAL.md`](docs/MANUAL.md)
+## 快速开始
+
+### 环境要求
+
+- **Python** `3.10+`
+- **Node.js** `22.12+`（前端构建与运行时依赖）
+
+### 启动后端与托管界面
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows；macOS/Linux 使用 source .venv/bin/activate
+pip install -r requirements.txt
+python run.py                   # 默认监听 http://127.0.0.1:5001
+```
+
+### 前端开发与测试
+
+```bash
+cd frontend
+npm install
+npm run dev                     # Vite 开发服务器（默认 5173）
+npm run typecheck               # TypeScript 类型检查
+npm test                        # Vitest 单元测试
+npm run test:e2e                # Playwright 端到端测试
+npm run build                   # 构建生产产物至 app/web/
+```
+
+---
+
+## 凭证配置
+
+可选凭证统一保存在本地 `credentials/accounts.json`（已被 `.gitignore` 忽略），推荐直接在界面「图谱页状态条 → 配置凭证」弹窗中管理，也可按如下格式手动配置多凭证轮询池：
+
+```json
+{
+  "netease": [
+    { "id": "primary", "name": "主账号", "cookie": "k=v; k2=v2", "enabled": true },
+    { "id": "acc_xxx", "name": "附加账号", "cookie": "k=v", "enabled": true }
+  ]
+}
+```
+
+- `id` 为 `primary` 的条目作为默认主凭证，其余启用的条目自动参与 `AdapterPool` 轮询并发。
+- 未配置凭证也可正常启动服务，仅对应需鉴权的公开平台接口受限。
+
+---
 
 ## 项目结构
 
 ```text
-app/
-├── routes/                  REST 路由（按领域拆分，由 api.py 汇总，唯一把异常转 JSON 响应的地方）
-│   ├── api.py               Blueprint 聚合入口
-│   ├── common.py            公共响应/快照 TTL/检索缓存/Store 辅助
-│   ├── account_routes.py    平台列表、凭证与账号池、缓存清理
-│   ├── platform_routes.py   单平台搜索、详情、聚合 /all、B站存档、QQ扫码
-│   ├── graph_routes.py      关系图搜索、展开队列、节点刷新、持久化
-│   ├── timeline_routes.py   统一时间线查询与导出
-│   └── logs_routes.py       运行日志查询与 SSE 推送
-├── platforms/
-│   ├── base.py              适配器抽象接口 + 数据模型
-│   ├── pool.py              多账号适配器池（租借制轮询）
-│   ├── __init__.py          平台工厂注册中心（延迟构造）
-│   └── <platform>/          8 个平台适配器（移植签名栈见 docs/MANUAL.md）
-├── services/
-│   ├── timeline.py          统一时间线（快照对比推断时间窗口）
-│   ├── social_expander.py   社交展开核心
-│   ├── expand_queue.py      按平台隔离的展开队列（限速/熔断/断点恢复）
-│   ├── log_hub.py           stdout 镜像 → 环形缓冲 → SSE
-│   └── qqmusic_qr_login.py  QQ音乐扫码登录（可选 Playwright）
-├── data/store.py            SQLite 快照/时间线/图谱/展开任务持久化
-├── credentials/             凭证管理（accounts.json 唯一存储）
-└── web/                     前端构建产物（勿手改）
-
-frontend/src/
-├── store.ts                 全局状态与数据加载编排
-├── platforms.ts             平台元信息与渲染配置（与后端字段契约）
-└── components/View*.tsx     平台视图 / 时间线 / 关系图谱 / 终端
+Sight/
+├── app/
+│   ├── routes/                  # 模块化 REST / SSE Blueprint 路由（统一异常转 JSON 边界）
+│   ├── platforms/               # 适配器抽象基类、AdapterPool 池化管理与 8 平台实现
+│   ├── services/                # timeline 时序 Diff、social_expander、异步展开队列、log_hub
+│   ├── data/store.py            # SQLite 快照 / 时间线 / 图谱 / 任务状态存储
+│   ├── credentials/             # 本地凭证管理
+│   └── web/                     # 前端生产构建静态产物
+├── frontend/src/                # React 19 + TS + Zustand + ECharts 6 前端源码
+├── tests/                       # 后端契约与单元测试（GitHub Actions CI 自动执行）
+├── docs/                        # API 契约、架构开发手册与调研文档
+└── run.py                       # 应用入口
 ```
 
-## 第三方仓库声明
+---
 
-本项目移植或参考了以下开源项目，感谢原作者：
+## 工程文档
 
-| 上游仓库 | 许可 | 在本项目中的使用 |
-|------|------|------|
-| [cv-cat/DouYin_Spider](https://github.com/cv-cat/DouYin_Spider) | 仓库未附 LICENSE | 抖音 API 与签名代码**移植**为 `app/platforms/douyin/ref_*`。**原仓库有 bug（关注列表接口）不可直接使用**，以修复版 fork [chenglei6-arch/DouYin_Spider](https://github.com/chenglei6-arch/DouYin_Spider) 为准 |
-| [cv-cat/Spider_XHS](https://github.com/cv-cat/Spider_XHS) | 仓库未附 LICENSE | 小红书 PC 签名栈**移植**为 `app/platforms/xhs/ref_*` |
-| [nghuyong/WeiboSpider](https://github.com/nghuyong/WeiboSpider) | MIT | 微博关注/粉丝列表请求构造参考，未复制代码 |
+- [`docs/API.md`](docs/API.md)：REST / SSE 接口契约总览
+- [`docs/MANUAL.md`](docs/MANUAL.md)：平台适配器规范、错误边界约定与新平台接入指南
+- [`docs/BILIBILI_ARCHIVES.md`](docs/BILIBILI_ARCHIVES.md)：公开存档数据源调研与接入说明
 
-上游仓库的本地参考副本在 `reference/`（git 忽略）；同步范围与本地修复见 [`docs/MANUAL.md`](docs/MANUAL.md)。
+---
 
-## 文档
+## 开源致谢
 
-- [`docs/API.md`](docs/API.md)：REST / SSE 接口一览
-- [`docs/BILIBILI_ARCHIVES.md`](docs/BILIBILI_ARCHIVES.md)：Aicu / Danmakus 开源调研与评论、弹幕存档查询接入
-- [`docs/MANUAL.md`](docs/MANUAL.md)：平台实现与坑、错误约定、接入新平台清单、上游同步范围
+本项目在部分平台接口研究与适配过程中参考了以下开源项目，特此致谢：
+
+| 上游项目 | 许可 | 说明 |
+| :--- | :--- | :--- |
+| [cv-cat/DouYin_Spider](https://github.com/cv-cat/DouYin_Spider) | — | 抖音公开接口适配参考与问题修复 |
+| [cv-cat/Spider_XHS](https://github.com/cv-cat/Spider_XHS) | — | 小红书公开接口适配参考 |
+| [nghuyong/WeiboSpider](https://github.com/nghuyong/WeiboSpider) | MIT | 微博关注/粉丝列表请求构造参考 |
+
+---
+
+## 免责声明
+
+本项目仅用于**全栈工程架构、多源数据聚合、图谱可视化与智能体分析技术的学习与研究**。使用本项目时请仅访问合法公开信息，严格遵守各平台服务条款、访问频率限制及相关隐私保护法律法规，严禁用于任何侵犯他人隐私或违反平台规则的用途。
