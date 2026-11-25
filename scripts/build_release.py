@@ -200,6 +200,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = parse_args(argv)
     clean_version, tag_version = normalize_version(args.version)
     os_name, arch_name = detect_target()

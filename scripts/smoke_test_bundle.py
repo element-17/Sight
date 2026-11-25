@@ -56,6 +56,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = parse_args(argv)
     bundle_dir = Path(args.bundle_dir).resolve()
     exe_name = "Sight.exe" if platform.system().lower().startswith("win") else "Sight"
