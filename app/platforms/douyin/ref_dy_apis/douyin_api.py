@@ -115,12 +115,23 @@ class DouyinAPI:
         work_list = []
         for _ in range(max_pages):
             res_json = DouyinAPI.get_user_work_info(auth, user_url, max_cursor)
-            if "aweme_list" not in res_json.keys():
+            status_code = res_json.get("status_code", 0)
+            if status_code:
+                status_msg = res_json.get("status_msg") or f"接口错误 {status_code}"
+                raise RuntimeError(f"[抖音] 获取作品列表失败: {status_msg} (status_code={status_code})")
+            if "aweme_list" not in res_json:
                 break
-            works = res_json["aweme_list"] or []
-            next_cursor = str(res_json["max_cursor"])
+            works = res_json.get("aweme_list") or []
             work_list.extend(works)
-            if res_json.get("has_more") != 1 or not works or next_cursor == max_cursor:
+            # 0 作品或私密作品用户会返回 status_code=0, aweme_list=null 且不含 max_cursor/has_more，
+            # 属于正常空列表，不能直接下标取 res_json["max_cursor"] 误判成 Cookie 失效
+            if res_json.get("has_more") != 1 or not works:
+                break
+            raw_cursor = res_json.get("max_cursor")
+            if raw_cursor is None:
+                break
+            next_cursor = str(raw_cursor)
+            if not next_cursor or next_cursor == max_cursor:
                 break
             max_cursor = next_cursor
         return work_list

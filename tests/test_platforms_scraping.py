@@ -561,6 +561,30 @@ class DouyinScrapingTests(unittest.TestCase):
             self.assertEqual(login_user["nickname"], "抖音正常号")
             self.assertEqual(login_user["avatarUrl"], "https://p3.douyinpic.com/me.jpg")
 
+    def test_get_user_all_work_info_handles_zero_works_without_max_cursor(self):
+        from app.platforms.douyin.ref_dy_apis.douyin_api import DouyinAPI
+
+        # 0 作品用户返回 status_code=0, aweme_list=None 且无 max_cursor，应正常返回空列表而非误报 Cookie 失效
+        with patch.object(
+            DouyinAPI,
+            "get_user_work_info",
+            return_value={"status_code": 0, "aweme_list": None, "time_list": None},
+        ):
+            self.assertEqual(
+                DouyinAPI.get_user_all_work_info(MagicMock(), "https://www.douyin.com/user/MS4w_zero"),
+                [],
+            )
+
+        # 非零 status_code（如未登录）应明确抛出 RuntimeError
+        with patch.object(
+            DouyinAPI,
+            "get_user_work_info",
+            return_value={"status_code": 8, "status_msg": "用户未登录", "aweme_list": None},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "用户未登录"):
+                DouyinAPI.get_user_all_work_info(MagicMock(), "https://www.douyin.com/user/MS4w_zero")
+
+
 class QQMusicScrapingTests(unittest.TestCase):
     """QQ音乐抓取与 SSR 解码测试"""
 
