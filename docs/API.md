@@ -72,3 +72,24 @@ REST 层是唯一把异常转 JSON 的边界，失败返回 `{"code": -1, "messa
 |------|------|------|
 | GET | `/logs/recent?after=seq` | 内存日志缓冲尾部，`after` 增量拉取（SSE 的降级轮询） |
 | GET | `/logs/stream?after=seq` | SSE 实时日志流 |
+
+## AI 人物侧写（LangGraph Agent · 原生多模态）
+
+基于 LangGraph `StateGraph` + SQLite Checkpointer（`data/agent_checkpoints.db`）的跨平台智能体接口，模型配置存储于 `credentials/llm.json`（支持 **Google Gemini 原生多模态** 与 **OpenAI 兼容协议 / 本地 Ollama**，GET 返回脱敏 Key，同时支持环境变量 `GEMINI_API_KEY` / `SIGHT_LLM_*` 兜底）。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/agent/config` | 获取脱敏后的 LLM 配置（含 `provider / enable_multimodal / supports_vision / supports_video`）与提供商预设 |
+| POST | `/agent/config` | 保存 LLM 配置（`provider / base_url / api_key / model / enable_multimodal / temperature / max_steps`），`provider="gemini"` 时 `base_url` 可留空直连官方接口，留空 `api_key` 保留原密钥 |
+| POST | `/agent/config/test` | 探测模型连通性（支持传入未保存草稿字段），返回 `ok / provider / supports_video / latency_ms / reply_preview / error` |
+| GET | `/agent/sessions` | 列出已保存的人物侧写档案元信息 |
+| POST | `/agent/sessions` | 创建并启动人物侧写，body 支持 `uids`（直通基线采集与多模态视觉基线）或 `target_query`（跨平台搜人 + `interrupt()` 人工确认），可选 `graph_id / focus / auto_confirm / refresh_data / auto_start` |
+| GET | `/agent/sessions/<id>` | 获取单条档案完整数据（Markdown 报告、结构化元信息、24h 作息与社交拓扑统计、图文/视频证据账本、盲区、执行轨迹、追问记录） |
+| DELETE | `/agent/sessions/<id>` | 删除侧写档案及其 LangGraph Checkpoint |
+| POST | `/agent/sessions/<id>/run` | 对已有档案重新执行一次侧写工作流 |
+| POST | `/agent/sessions/<id>/resume` | 提交勾选后的 `{"confirmed_accounts": {platform: uid}}`，通过 LangGraph `Command(resume=...)` 从断点恢复执行 |
+| POST | `/agent/sessions/<id>/chat` | 在同一 LangGraph `thread_id` 上发送多轮追问（`{"message": "..."}`），复用证据账本并按需补调工具（含 `inspect_images` / `inspect_video`） |
+| POST | `/agent/sessions/<id>/cancel` | 协作式中止正在执行的推理任务 |
+| GET | `/agent/sessions/<id>/events?after=seq` | 按游标增量拉取执行事件（SSE 降级轮询） |
+| GET | `/agent/sessions/<id>/stream?after=seq` | SSE 实时推送阶段进度、工具轨迹、中断确认、流式报告与追问回复 |
+| GET | `/agent/media/<media_id>` | 按严格 24 位十六进制 `media_id` 提供本机防盗链缓存的图片/视频预览（24h TTL，防路径穿越与 SSRF） |

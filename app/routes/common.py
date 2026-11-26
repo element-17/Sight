@@ -16,29 +16,25 @@ from app.data.store import DataStore
 from app.paths import get_runtime_dir
 from app.platforms import get_adapter
 from app.services.log_hub import get_log_hub
+from app.services.platform_fetcher import (
+    AUTH_EXPIRED_KEYWORDS as _AUTH_EXPIRED_KEYWORDS,
+    SNAPSHOT_TTL,
+    is_auth_expired_error as _is_auth_expired_error,
+    is_marker as _is_marker,
+    snapshot_age as _snapshot_age,
+)
+from app.services.search_service import (
+    SEARCH_CACHE_TTL,
+    _search_cache,
+    _search_cache_lock,
+    clear_search_cache,
+)
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
 LOG_DIR = get_runtime_dir() / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 CST = timezone(timedelta(hours=8))
-
-# /all 快照缓存有效期（30 分钟）
-SNAPSHOT_TTL = 30 * 60
-
-# 关系图搜索缓存（30 分钟）
-SEARCH_CACHE_TTL = 30 * 60
-_search_cache: dict[tuple, tuple[float, list]] = {}
-_search_cache_lock = threading.Lock()
-
-_AUTH_EXPIRED_KEYWORDS = (
-    "登录态已失效",
-    "登录已过期",
-    "用户未登录",
-    "凭证无效或已过期",
-    "请更新 Cookie",
-    "客户端未初始化",
-)
 
 
 def get_store() -> DataStore:
@@ -58,37 +54,6 @@ def _result(data, code: int = 200):
 def _error(msg: str, code: int = -1, http_status: int = 500):
     """统一错误响应格式"""
     return jsonify({"code": code, "message": msg}), http_status
-
-
-def _is_auth_expired_error(msg: str) -> bool:
-    """判定子模块错误是否为 Cookie / Token 登录凭证失效"""
-    s = str(msg or "")
-    return any(k in s for k in _AUTH_EXPIRED_KEYWORDS)
-
-
-def _snapshot_age(snapshot: dict):
-    """快照的年龄（秒）；无法解析时间返回 None"""
-    ts = snapshot.get("_snapshot_time")
-    if not ts:
-        return None
-    try:
-        return max(0.0, time.time() - datetime.fromisoformat(str(ts)).timestamp())
-    except (ValueError, TypeError, OSError):
-        return None
-
-
-def _is_marker(snapshot: dict) -> bool:
-    """内容未变化的占位快照（save_snapshot 只存哈希标记，不含真实数据）"""
-    return isinstance(snapshot, dict) and bool(snapshot.get("_marker"))
-
-
-def clear_search_cache(platform: str) -> int:
-    """清理关系图搜索缓存中指定平台的条目，返回清理条数"""
-    with _search_cache_lock:
-        stale = [k for k in _search_cache if k[0] == platform]
-        for k in stale:
-            del _search_cache[k]
-    return len(stale)
 
 
 def _log_fetch(

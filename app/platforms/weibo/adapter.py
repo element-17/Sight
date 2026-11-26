@@ -343,6 +343,55 @@ class WeiboAdapter(BasePlatformAdapter):
             },
         )
 
+    @staticmethod
+    def _extract_mblog_media(mblog: dict) -> dict:
+        """从微博 mblog 提取九宫格原图列表与视频流 URL（优先标清/流畅 MP4）。"""
+        pics: list[str] = []
+        for p in mblog.get("pics") or []:
+            if not isinstance(p, dict):
+                continue
+            large = p.get("large") if isinstance(p.get("large"), dict) else {}
+            u = str(large.get("url") or p.get("url") or "").strip()
+            if u and u not in pics:
+                pics.append(u)
+
+        video_urls: list[str] = []
+        cover_url = pics[0] if pics else ""
+        page_info = mblog.get("page_info") if isinstance(mblog.get("page_info"), dict) else {}
+        if page_info:
+            page_pic = page_info.get("page_pic")
+            if not cover_url:
+                if isinstance(page_pic, dict) and page_pic.get("url"):
+                    cover_url = str(page_pic["url"])
+                elif isinstance(page_pic, str):
+                    cover_url = page_pic
+            media_info = page_info.get("media_info") if isinstance(page_info.get("media_info"), dict) else {}
+            urls_dict = page_info.get("urls") if isinstance(page_info.get("urls"), dict) else {}
+            # 优先流畅/标清 mp4，再回退高清
+            for candidate in (
+                media_info.get("mp4_ld_mp4"),
+                media_info.get("mp4_sd_url"),
+                media_info.get("stream_url"),
+                urls_dict.get("mp4_ld_mp4"),
+                media_info.get("mp4_720p_mp4"),
+                media_info.get("mp4_hd_url"),
+                media_info.get("stream_url_hd"),
+                urls_dict.get("mp4_720p_mp4"),
+                urls_dict.get("mp4_hd_mp4"),
+            ):
+                if candidate and str(candidate).startswith(("http://", "https://")) and str(candidate) not in video_urls:
+                    video_urls.append(str(candidate))
+
+        video_url = video_urls[0] if video_urls else ""
+        media_type = "video" if video_url else ("images" if pics else "text")
+        return {
+            "pics": pics,
+            "cover_url": cover_url,
+            "video_url": video_url,
+            "video_urls": video_urls[:4],
+            "media_type": media_type,
+        }
+
     # ==================== 内容列表（微博列表） ====================
 
     def get_content_lists(self, uid: str) -> list[ContentItem]:
@@ -404,12 +453,13 @@ class WeiboAdapter(BasePlatformAdapter):
                 title = text_plain[:200]
 
                 item_id = mblog.get("id", "") or mblog.get("mid", "")
+                media = self._extract_mblog_media(mblog)
 
                 items.append(ContentItem(
                     item_id=str(item_id),
                     title=title,
-                    cover_url="",
-                    count=1,
+                    cover_url=media["cover_url"],
+                    count=len(media["pics"]) if media["pics"] else 1,
                     view_count=0,  # 旧版 API 可能不返回阅读数
                     creator=mblog.get("user", {}).get("screen_name", ""),
                     description=text_plain[:500],
@@ -420,7 +470,11 @@ class WeiboAdapter(BasePlatformAdapter):
                         "comments_count": mblog.get("comments_count", 0),
                         "attitudes_count": mblog.get("attitudes_count", 0),  # 点赞
                         "text": text_raw,
-                        "pic_num": len(mblog.get("pics", [])),
+                        "pic_num": len(media["pics"]),
+                        "pics": media["pics"],
+                        "video_url": media["video_url"],
+                        "video_urls": media["video_urls"],
+                        "media_type": media["media_type"],
                         "is_retweet": bool(mblog.get("retweeted_status")),
                         "source": mblog.get("source", ""),
                     },
@@ -521,6 +575,7 @@ class WeiboAdapter(BasePlatformAdapter):
                     orig_text = re.sub(r'<[^>]+>', '', orig.get("text", "")).strip()
                     media_title = orig_text[:100]
 
+                media = self._extract_mblog_media(mblog)
                 events.append(EventItem(
                     event_id=str(mblog.get("id", "")),
                     event_type=event_type,
@@ -532,7 +587,10 @@ class WeiboAdapter(BasePlatformAdapter):
                         "reposts_count": mblog.get("reposts_count", 0),
                         "comments_count": mblog.get("comments_count", 0),
                         "attitudes_count": mblog.get("attitudes_count", 0),
-                        "pic_count": len(mblog.get("pics", [])),
+                        "pic_count": len(media["pics"]),
+                        "pics": media["pics"],
+                        "video_url": media["video_url"],
+                        "media_type": media["media_type"],
                         "is_retweet": bool(mblog.get("retweeted_status")),
                     },
                 ))

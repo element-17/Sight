@@ -53,6 +53,8 @@ class XhsAdapter(BasePlatformAdapter):
         self._last_request_at = 0.0
         # /graph 接口会从多个线程并发调用本适配器，限流必须串行化
         self._rl_lock = threading.Lock()
+        # 缓存 note_id -> xsec_token，供 get_content_detail 调用笔记详情接口时携带
+        self._note_tokens: dict[str, str] = {}
 
     # ==================== 凭证加载 ====================
 
@@ -285,6 +287,10 @@ class XhsAdapter(BasePlatformAdapter):
                 title = note.get("display_title") or note.get("title") or "无标题"
                 create_time = note.get("time", note.get("create_time", ""))
                 user = note.get("user") or {}
+                xsec_token = str(note.get("xsec_token") or "")
+                if note_id and xsec_token:
+                    self._note_tokens[str(note_id)] = xsec_token
+                note_type = str(note.get("type") or "")
                 items.append(ContentItem(
                     item_id=note_id,
                     title=str(title)[:200],
@@ -300,8 +306,9 @@ class XhsAdapter(BasePlatformAdapter):
                         "collected_count": interact.get("collected_count", note.get("collected_count", 0)),
                         "comment_count": interact.get("comment_count", note.get("comment_count", 0)),
                         "share_count": interact.get("share_count", note.get("share_count", 0)),
-                        "type": note.get("type", ""),
-                        "xsec_token": note.get("xsec_token", ""),
+                        "type": note_type,
+                        "media_type": "video" if note_type == "video" else "images",
+                        "xsec_token": xsec_token,
                     },
                 ))
             return items
@@ -309,6 +316,96 @@ class XhsAdapter(BasePlatformAdapter):
             raise
         except (ValueError, AttributeError, TypeError) as e:
             raise RuntimeError(f"[小红书] 笔记列表解析失败 ({uid}): {e}") from e
+
+    def get_content_detail(self, item_id: str, xsec_token: str = "") -> Optional[dict]:
+        """获取小红书笔记完整图文与视频流（复用已移植的 XHS_Apis.get_note_info）。"""
+        if not self.api_pc:
+            raise RuntimeError(self._uninit_error_msg())
+        note_id = str(item_id or "").strip()
+        if not note_id:
+            return None
+        token = (xsec_token or "").strip() or self._note_tokens.get(note_id, "")
+        url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        if token:
+            from urllib.parse import quote
+            url += f"?xsec_token={quote(token)}&xsec_source=pc_user"
+
+        self._rate_limit()
+        success, msg, res = self.api_pc.get_note_info(url)
+        if not success or not isinstance(res, dict):
+            raise RuntimeError(f"[小红书] 获取笔记详情失败 ({note_id}): {msg or '接口返回失败'}")
+
+        items_list = (res.get("data") or {}).get("items") or []
+        if not items_list:
+            return None
+        card = (items_list[0] or {}).get("note_card") or {}
+        if not isinstance(card, dict):
+            return None
+
+        images: list[str] = []
+        for img in card.get("image_list") or []:
+            if not isinstance(img, dict):
+                continue
+            img_url = str(img.get("url_default") or img.get("url_pre") or "")
+            if not img_url:
+                for info in img.get("info_list") or []:
+                    if isinstance(info, dict) and info.get("url"):
+                        img_url = str(info["url"])
+                        break
+            if img_url and img_url not in images:
+                images.append(img_url)
+
+        video_urls: list[str] = []
+        video_obj = card.get("video") if isinstance(card.get("video"), dict) else {}
+        media_obj = video_obj.get("media") if isinstance(video_obj.get("media"), dict) else {}
+        stream = media_obj.get("stream") if isinstance(media_obj.get("stream"), dict) else {}
+        for codec in ("h264", "h265", "av1"):
+            for s_item in stream.get(codec) or []:
+                if not isinstance(s_item, dict):
+                    continue
+                for u in [s_item.get("master_url"), *(s_item.get("backup_urls") or [])]:
+                    if u and str(u) not in video_urls:
+                        video_urls.append(str(u))
+        consumer = video_obj.get("consumer") if isinstance(video_obj.get("consumer"), dict) else {}
+        origin_key = str(consumer.get("origin_video_key") or "").strip()
+        if origin_key:
+            origin_url = f"https://sns-video-bd.xhscdn.com/{origin_key}"
+            if origin_url not in video_urls:
+                video_urls.append(origin_url)
+
+        note_type = str(card.get("type") or "")
+        if note_type == "video" and not video_urls:
+            try:
+                ok_v, _m, v_addr = self.api_pc.get_note_no_water_video(note_id)
+                if ok_v and v_addr:
+                    video_urls.append(str(v_addr))
+            except Exception:
+                pass
+
+        interact = card.get("interact_info") if isinstance(card.get("interact_info"), dict) else {}
+        user = card.get("user") if isinstance(card.get("user"), dict) else {}
+        tag_list = [
+            str(t.get("name"))
+            for t in (card.get("tag_list") or [])
+            if isinstance(t, dict) and t.get("name")
+        ]
+        return {
+            "title": str(card.get("title") or card.get("desc") or "无标题")[:200],
+            "coverUrl": images[0] if images else "",
+            "count": len(images) if images else 1,
+            "viewCount": 0,
+            "description": str(card.get("desc") or "")[:1000],
+            "creator": str(user.get("nickname") or ""),
+            "createTime": str(card.get("time") or ""),
+            "subscribedCount": interact.get("collected_count", 0),
+            "media_type": "video" if (note_type == "video" or video_urls) else "images",
+            "images": images,
+            "video_url": video_urls[0] if video_urls else "",
+            "video_urls": video_urls[:4],
+            "tags": tag_list,
+            "ip_location": str(card.get("ip_location") or ""),
+            "items": [],
+        }
 
     # ==================== 动态 ====================
 

@@ -1,8 +1,10 @@
 import type { Page } from "@playwright/test";
 import type {
   Account,
+  AgentSessionDetail,
   GraphData,
   GraphNode,
+  LlmConfig,
   TimelineEntry,
 } from "../../src/types";
 export const ids = [
@@ -74,6 +76,163 @@ export async function installMockApi(page: Page) {
   let qrPolls = 0,
     queued = false,
     cursor = 0;
+  let llmConfig: LlmConfig = {
+    provider: "openai_compatible",
+    base_url: "https://api.deepseek.com/v1",
+    model: "deepseek-chat",
+    temperature: 0.2,
+    max_steps: 8,
+    timeout: 90,
+    enable_multimodal: true,
+    supports_vision: true,
+    supports_video: false,
+    has_api_key: true,
+    api_key_preview: "sk-1...cdef",
+    api_key_source: "file",
+    is_local: false,
+    configured: true,
+    presets: [
+      {
+        id: "gemini_flash",
+        name: "Gemini 2.5 Flash (原生多模态·推荐)",
+        provider: "gemini",
+        base_url: "",
+        model: "gemini-2.5-flash",
+      },
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        provider: "openai_compatible",
+        base_url: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+      },
+      {
+        id: "ollama",
+        name: "Ollama (本地)",
+        provider: "openai_compatible",
+        base_url: "http://127.0.0.1:11434/v1",
+        model: "qwen2.5:14b",
+      },
+    ],
+  };
+  let agentSessions: AgentSessionDetail[] = [];
+  const sampleDoneSession = (
+    id: string,
+    title: string,
+    uids: Record<string, string>,
+  ): AgentSessionDetail => ({
+    id,
+    title,
+    target_query: "",
+    focus: "",
+    uids,
+    graph_id: null,
+    status: "done",
+    model: llmConfig.model,
+    error: "",
+    created_at: "2026-11-26T10:00:00+08:00",
+    updated_at: "2026-11-26T10:00:05+08:00",
+    has_report: true,
+    running: false,
+    last_seq: 3,
+    report_markdown:
+      "# 人物形象侧写：示例开发者\n\n## 一、核心概览\n常驻杭州的开源开发者 [高置信][E1]，偏夜间活跃 [中置信][E2]。",
+    structured: {
+      profile_meta: {
+        headline: "常驻杭州的开源开发者",
+        tags: ["Python", "开源", "夜猫子"],
+        confidence_overall: "high",
+        dimensions: [
+          {
+            key: "identity",
+            title: "身份线索",
+            summary: "公开资料指向技术开发者",
+            confidence: "high",
+            evidence_ids: ["E1"],
+          },
+        ],
+        blind_spots: [],
+      },
+      baseline_stats: {
+        activity: {
+          total_timed_events: 8,
+          hourly_distribution: [
+            2, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 1,
+          ],
+          weekday_distribution: [],
+          peak_hours: [1],
+          late_night_ratio: 0.875,
+          chronotype: "深夜活跃型（夜猫子）",
+          timezone_hint: "CST (UTC+8)",
+        },
+        social: {
+          total_nodes: 3,
+          total_follow_edges: 2,
+          mutual_core_contacts: [
+            {
+              id: "github:peer1",
+              platform: "github",
+              platform_name: "GitHub",
+              uid: "peer1",
+              nickname: "核心互关好友",
+              fans: 32,
+              verified: false,
+              degree: 2,
+              relation: "mutual",
+            },
+          ],
+          followed_public_accounts: [],
+        },
+      },
+      citation_report: {
+        total_evidence: 2,
+        cited_valid: ["E1", "E2"],
+        removed_invalid: [],
+      },
+    },
+    evidence: {
+      E1: {
+        id: "E1",
+        platform: "github",
+        platform_name: "GitHub",
+        uid: "100",
+        category: "profile",
+        title: "GitHub 主页资料",
+        snippet: "昵称「测试用户-github」 | 地区: Hangzhou",
+        url: "https://github.com/100",
+      },
+      E2: {
+        id: "E2",
+        platform: "multi",
+        platform_name: "作息统计",
+        category: "activity_stats",
+        title: "确定性作息统计",
+        snippet: "深夜活跃型（夜猫子），高峰时段 01:00",
+      },
+      E3: {
+        id: "E3",
+        platform: "multi",
+        platform_name: "多模态视觉基线",
+        category: "visual_baseline",
+        title: "跨平台头像与背景视觉基线（1 张）",
+        snippet: "头像风格偏极简科技插画，跨平台视觉一致",
+        media_urls: ["/api/agent/media/0123456789abcdef01234567"],
+      },
+    },
+    gaps: [],
+    trace: [
+      {
+        ts: "10:00:01",
+        stage: "collect_baseline",
+        title: "基线采集与确定性统计完成",
+        detail: "建立 2 条初始证据",
+        status: "done",
+        elapsed_ms: 120,
+      },
+    ],
+    chat_history: [],
+  });
   await page.addInitScript(() => {
     // Exercise the documented SSE fallback without opening external connections.
     class UnavailableEventSource {
@@ -205,7 +364,7 @@ export async function installMockApi(page: Page) {
         accounts: accountList,
         pool_size: accountList.filter((a) => a.enabled).length,
       };
-    } else if (path.endsWith("/test"))
+    } else if (path.startsWith("/accounts/") && path.endsWith("/test"))
       data = { ok: true, latency_ms: 15, login_user: { nickname: "测试账号" } };
     else if (path.startsWith("/accounts/")) {
       const id = path.split("/")[3];
@@ -331,6 +490,125 @@ export async function installMockApi(page: Page) {
         last_seq: 1,
       };
     else if (path.endsWith("/cache/clear")) data = { adapters_dropped: 1 };
+    else if (path.startsWith("/agent/media/")) {
+      const tinyPng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      await route.fulfill({ status: 200, contentType: "image/png", body: tinyPng });
+      return;
+    } else if (path === "/agent/config") {
+      if (method === "POST") {
+        const nextProvider = body.provider === "gemini" ? "gemini" : "openai_compatible";
+        const nextMm = body.enable_multimodal ?? llmConfig.enable_multimodal;
+        llmConfig = {
+          ...llmConfig,
+          provider: nextProvider,
+          base_url: body.base_url ?? llmConfig.base_url,
+          model: body.model || llmConfig.model,
+          enable_multimodal: nextMm,
+          supports_vision: nextMm,
+          supports_video: nextProvider === "gemini" && nextMm,
+          configured: true,
+        };
+      }
+      data = llmConfig;
+    } else if (path === "/agent/config/test") {
+      const testProvider = body?.provider || llmConfig.provider;
+      const testMm = body?.enable_multimodal ?? llmConfig.enable_multimodal;
+      data = {
+        ok: true,
+        provider: testProvider,
+        model: body?.model || llmConfig.model,
+        base_url: body?.base_url ?? llmConfig.base_url,
+        supports_video: testProvider === "gemini" && testMm,
+        latency_ms: 42,
+        reply_preview: "OK",
+      };
+    } else if (path === "/agent/sessions") {
+      if (method === "POST") {
+        const id = `sess_${agentSessions.length + 1}`;
+        if (body.target_query && !body.auto_confirm) {
+          const paused: AgentSessionDetail = {
+            ...sampleDoneSession(id, `${body.target_query} · 人物侧写`, {}),
+            target_query: body.target_query,
+            status: "waiting_confirm",
+            report_markdown: "",
+            has_report: false,
+            running: false,
+            structured: {
+              pending_interrupt: {
+                type: "confirm_identities",
+                query: body.target_query,
+                message: "请勾选属于同一目标的候选账号",
+                candidates: [
+                  {
+                    id: "github:cand_dev",
+                    platform: "github",
+                    platform_name: "GitHub",
+                    uid: "cand_dev",
+                    nickname: body.target_query,
+                    signature: "开源开发者",
+                    fans: 88,
+                    confidence: 0.95,
+                    recommended: true,
+                  },
+                ],
+              },
+            },
+          };
+          agentSessions = [paused, ...agentSessions];
+          data = paused;
+        } else {
+          const done = sampleDoneSession(
+            id,
+            body.title || "面板账号 · 人物侧写",
+            body.uids || { github: "100" },
+          );
+          agentSessions = [done, ...agentSessions];
+          data = done;
+        }
+      } else {
+        data = agentSessions;
+      }
+    } else if (/^\/agent\/sessions\/[^/]+$/.test(path)) {
+      const sid = path.split("/")[3];
+      if (method === "DELETE") {
+        agentSessions = agentSessions.filter((s) => s.id !== sid);
+        data = { id: sid, deleted: true };
+      } else {
+        data = agentSessions.find((s) => s.id === sid) || null;
+      }
+    } else if (/^\/agent\/sessions\/[^/]+\/resume$/.test(path)) {
+      const sid = path.split("/")[3];
+      const resumed = sampleDoneSession(
+        sid,
+        "确认后 · 人物侧写",
+        body.confirmed_accounts || { github: "cand_dev" },
+      );
+      agentSessions = agentSessions.map((s) => (s.id === sid ? resumed : s));
+      data = resumed;
+    } else if (/^\/agent\/sessions\/[^/]+\/chat$/.test(path)) {
+      const sid = path.split("/")[3];
+      agentSessions = agentSessions.map((s) =>
+        s.id === sid
+          ? {
+              ...s,
+              chat_history: [
+                ...s.chat_history,
+                { role: "user", content: body.message },
+                {
+                  role: "assistant",
+                  content: "根据 [E1] 和 [E2]，该目标常在深夜活跃。",
+                },
+              ],
+            }
+          : s,
+      );
+      data = agentSessions.find((s) => s.id === sid);
+    } else if (/^\/agent\/sessions\/[^/]+\/events$/.test(path)) {
+      data = { entries: [], last_seq: 3, running: false };
+    }
     await route.fulfill({ json: { code: 200, data } });
   });
   return { requests, getGraph: () => graph };

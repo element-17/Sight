@@ -28,9 +28,10 @@ export default function TopBar() {
   const platform = PLATFORM_MAP[state.view];
   const title =
     platform?.name ||
-    ({ timeline: "活动时间线", graph: "关系图谱" } as Record<string, string>)[
-      state.view
-    ] ||
+    ({ timeline: "活动时间线", graph: "关系图谱", agent: "AI 侧写" } as Record<
+      string,
+      string
+    >)[state.view] ||
     "Sight";
   const queueInfo = queueSummary(state.queues);
   const data = isPlatformId(state.view) ? state.data[state.view] : null;

@@ -8,6 +8,7 @@
   - platform_routes.py /<platform>/search|playlist|all, /bilibili/archives, /qqmusic/qr-login/*
   - graph_routes.py    /graph/search|expand/*|refresh_nodes|save|saved*
   - timeline_routes.py /timeline, /timeline/<id>
+  - agent_routes.py    /agent/config*, /agent/sessions*
 """
 from app.routes.common import (
     SNAPSHOT_TTL,
@@ -26,6 +27,7 @@ _store = None
 # 导入各领域子模块，将其路由注册到共享 Blueprint `bp`
 from app.routes import (  # noqa: E402, F401
     account_routes,
+    agent_routes,
     graph_routes,
     logs_routes,
     platform_routes,

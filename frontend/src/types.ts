@@ -7,7 +7,7 @@ export type PlatformId =
   | "genshin"
   | "xhs"
   | "github";
-export type ViewId = PlatformId | "timeline" | "graph";
+export type ViewId = PlatformId | "timeline" | "graph" | "agent";
 export type Numeric = number | string;
 export interface Stat {
   label: string;
@@ -393,4 +393,214 @@ export interface LogEntry {
 export interface LogResponse {
   entries: LogEntry[];
   last_seq?: number;
+}
+export type LlmProvider = "openai_compatible" | "gemini";
+export interface LlmPreset {
+  id: string;
+  name: string;
+  provider?: LlmProvider;
+  base_url: string;
+  model: string;
+}
+export interface LlmConfig {
+  provider: LlmProvider;
+  base_url: string;
+  model: string;
+  temperature: number;
+  max_steps: number;
+  timeout: number;
+  enable_multimodal: boolean;
+  supports_vision?: boolean;
+  supports_video?: boolean;
+  has_api_key: boolean;
+  api_key_preview: string;
+  api_key_source: string;
+  is_local: boolean;
+  configured: boolean;
+  presets: LlmPreset[];
+}
+export interface LlmTestResult {
+  ok: boolean;
+  provider?: LlmProvider;
+  model: string;
+  base_url: string;
+  supports_video?: boolean;
+  latency_ms: number;
+  reply_preview?: string;
+  error?: string;
+}
+export interface AgentEvidenceItem {
+  id: string;
+  platform: string;
+  platform_name?: string;
+  uid?: string;
+  category: string;
+  title: string;
+  snippet: string;
+  url?: string;
+  timestamp?: string;
+  media_urls?: string[];
+  video_url?: string;
+}
+export interface AgentGapItem {
+  platform: string;
+  category: string;
+  reason: string;
+  error_kind?: string;
+}
+export interface AgentTraceItem {
+  ts: string;
+  stage: string;
+  tool?: string;
+  title: string;
+  detail: string;
+  status: string;
+  elapsed_ms?: number;
+  evidence_ids?: string[];
+}
+export interface AgentCandidate {
+  id: string;
+  platform: PlatformId;
+  platform_name: string;
+  uid: string;
+  nickname: string;
+  avatarUrl?: string;
+  signature?: string;
+  fans?: Numeric;
+  verified?: boolean;
+  similarity?: number;
+  cross_platform_hits?: number;
+  confidence: number;
+  recommended: boolean;
+}
+export interface AgentPendingInterrupt {
+  type: string;
+  query?: string;
+  message?: string;
+  candidates?: AgentCandidate[];
+}
+export interface AgentActivityStats {
+  total_timed_events: number;
+  hourly_distribution: number[];
+  weekday_distribution: Array<{ day: string; count: number }>;
+  peak_hours: number[];
+  late_night_ratio: number;
+  chronotype: string;
+  timezone_hint: string;
+  date_span?: { earliest: string; latest: string };
+  platform_activity?: Array<{
+    platform: string;
+    platform_name: string;
+    count: number;
+  }>;
+  top_artists?: Array<{ name: string; score: number }>;
+  top_languages?: Array<{ name: string; count: number }>;
+  locations?: string[];
+}
+export interface AgentSocialContact {
+  id: string;
+  platform: string;
+  platform_name: string;
+  uid: string;
+  nickname: string;
+  fans: number;
+  verified: boolean;
+  signature?: string;
+  degree: number;
+  relation: string;
+}
+export interface AgentSocialStats {
+  total_nodes: number;
+  total_follow_edges: number;
+  mutual_core_contacts: AgentSocialContact[];
+  followed_public_accounts: AgentSocialContact[];
+  notable_neighbors?: AgentSocialContact[];
+  cross_platform_links?: Array<{ relation: string; a: string; b: string }>;
+}
+export interface AgentProfileMeta {
+  headline?: string;
+  tags?: string[];
+  confidence_overall?: string;
+  dimensions?: Array<{
+    key?: string;
+    title: string;
+    summary: string;
+    confidence?: string;
+    evidence_ids?: string[];
+  }>;
+  blind_spots?: string[];
+}
+export interface AgentStructured {
+  profile_meta?: AgentProfileMeta;
+  baseline_stats?: {
+    activity?: AgentActivityStats;
+    social?: AgentSocialStats;
+    graph_id?: number | null;
+    graph_name?: string;
+    timeline_count?: number;
+  };
+  citation_report?: {
+    total_evidence: number;
+    cited_valid: string[];
+    removed_invalid: string[];
+  };
+  candidate_accounts?: AgentCandidate[];
+  pending_interrupt?: AgentPendingInterrupt;
+}
+export interface AgentChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  ts?: string;
+}
+export type AgentStatus =
+  | "idle"
+  | "running"
+  | "waiting_confirm"
+  | "done"
+  | "failed"
+  | "cancelled";
+export interface AgentSessionMeta {
+  id: string;
+  title: string;
+  target_query: string;
+  focus: string;
+  uids: Record<string, string>;
+  graph_id: number | null;
+  status: AgentStatus;
+  model: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+  has_report?: boolean;
+  running?: boolean;
+}
+export interface AgentSessionDetail extends AgentSessionMeta {
+  report_markdown: string;
+  structured: AgentStructured;
+  evidence: Record<string, AgentEvidenceItem>;
+  gaps: AgentGapItem[];
+  trace: AgentTraceItem[];
+  chat_history: AgentChatMessage[];
+  last_seq?: number;
+}
+export interface AgentStreamEvent {
+  seq: number;
+  ts: string;
+  type: string;
+  stage?: string;
+  label?: string;
+  tool?: string;
+  delta?: string;
+  message?: string;
+  answer?: string;
+  item?: AgentTraceItem;
+  stats?: AgentStructured["baseline_stats"];
+  new_evidence?: Record<string, AgentEvidenceItem>;
+  payload?: AgentPendingInterrupt;
+  session?: AgentSessionDetail;
+}
+export interface AgentEventsResponse {
+  entries: AgentStreamEvent[];
+  last_seq: number;
+  running: boolean;
 }

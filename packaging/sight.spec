@@ -8,7 +8,12 @@ PyInstaller 打包配置（跨平台 Windows / macOS / Linux）
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 REPO_ROOT = Path(SPECPATH).resolve().parent
 XHS_REF_ROOT = REPO_ROOT / "app" / "platforms" / "xhs"
@@ -20,6 +25,22 @@ for path_entry in (str(REPO_ROOT), str(XHS_REF_ROOT)):
 # 收集第三方原生依赖（curl_cffi 含 libcurl 动态库与证书，certifi 含 CA 证书）
 curl_datas, curl_binaries, curl_hidden = collect_all("curl_cffi")
 certifi_datas = collect_data_files("certifi")
+tiktoken_datas = collect_data_files("tiktoken_ext")
+
+metadata_datas = []
+for pkg_name in (
+    "langgraph",
+    "langgraph-checkpoint",
+    "langgraph-checkpoint-sqlite",
+    "langchain-core",
+    "langchain-openai",
+    "langchain-google-genai",
+    "google-genai",
+):
+    try:
+        metadata_datas.extend(copy_metadata(pkg_name))
+    except Exception:
+        pass
 
 datas = [
     (str(REPO_ROOT / "app" / "web"), "app/web"),
@@ -28,6 +49,8 @@ datas = [
     (str(XHS_REF_ROOT / "ref_xhs_pc" / "js"), "ref_xhs_pc/js"),
     *curl_datas,
     *certifi_datas,
+    *tiktoken_datas,
+    *metadata_datas,
 ]
 
 version_file = REPO_ROOT / "app" / "VERSION"
@@ -45,6 +68,13 @@ hiddenimports = sorted(
         + collect_submodules("ref_xhs_pc")
         + collect_submodules("ref_apis")
         + collect_submodules("ref_utils")
+        + collect_submodules("langgraph")
+        + collect_submodules("langgraph.checkpoint.sqlite")
+        + collect_submodules("langchain_core")
+        + collect_submodules("langchain_openai")
+        + collect_submodules("langchain_google_genai")
+        + collect_submodules("google.genai")
+        + collect_submodules("tiktoken_ext")
         + list(curl_hidden)
         + [
             "cffi",
@@ -55,6 +85,7 @@ hiddenimports = sorted(
             "Crypto.Cipher.AES",
             "Crypto.Util.Padding",
             "google.protobuf",
+            "google.auth",
             "ecdsa",
             "bs4",
             "loguru",
@@ -62,6 +93,13 @@ hiddenimports = sorted(
             "flask",
             "werkzeug",
             "jinja2",
+            "sqlite3",
+            "httpx",
+            "openai",
+            "pydantic",
+            "ormsgpack",
+            "xxhash",
+            "tenacity",
         ]
     )
 )

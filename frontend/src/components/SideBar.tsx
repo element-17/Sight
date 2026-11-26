@@ -2,12 +2,14 @@ import { useShallow } from "zustand/react/shallow";
 import { classNames } from "../classes";
 import { PLATFORMS } from "../platforms";
 import {
+  openAgentSession,
   openSavedGraph,
+  removeAgentSession,
   removeSavedGraph,
   setView,
   useAppStore,
 } from "../store";
-import type { SavedGraphMeta } from "../types";
+import type { AgentSessionMeta, SavedGraphMeta } from "../types";
 import styles from "./SideBar.module.css";
 import Icon from "./ui/Icon";
 const cx = classNames(styles);
@@ -19,6 +21,9 @@ export default function SideBar() {
       activeGraphId: s.activeGraphId,
       savedGraphs: s.savedGraphs,
       savedGraphsError: s.savedGraphsError,
+      agentSessions: s.agentSessions,
+      activeAgentId: s.activeAgentId,
+      agentSessionsError: s.agentSessionsError,
       platformsMeta: s.platformsMeta,
       platformsMetaError: s.platformsMetaError,
     })),
@@ -44,6 +49,10 @@ export default function SideBar() {
   async function removeGraph(g: SavedGraphMeta) {
     if (window.confirm(`确定删除图谱「${g.name}」吗？删除后不可恢复。`))
       await removeSavedGraph(g.id);
+  }
+  async function removeAgent(s: AgentSessionMeta) {
+    if (window.confirm(`确定删除侧写档案「${s.title}」吗？删除后不可恢复。`))
+      await removeAgentSession(s.id);
   }
 
   return (
@@ -142,6 +151,49 @@ export default function SideBar() {
           ))}
           {state.savedGraphsError ? (
             <div className={cx("nav-graph-err")}>{state.savedGraphsError}</div>
+          ) : null}
+          <button
+            className={cx("nav-item", {
+              active: state.view === "agent" && !state.activeAgentId,
+            })}
+            onClick={() => {
+              openAgentSession(null);
+            }}
+          >
+            <span className={cx("nav-dot nav-dot-icon")}>
+              <Icon name="sparkles" size={14}></Icon>
+            </span>
+            <span className={cx("nav-name")}>{"AI 侧写"}</span>
+          </button>
+          {state.agentSessions.map((s) => (
+            <button
+              key={"agent-" + s.id}
+              title={`${s.title}\n状态：${s.status}${s.model ? ` · ${s.model}` : ""}`}
+              className={cx("nav-item nav-graph", {
+                active: state.view === "agent" && state.activeAgentId === s.id,
+              })}
+              onClick={() => {
+                openAgentSession(s.id);
+              }}
+            >
+              <span className={cx("nav-dot nav-dot-icon nav-graph-icon")}>
+                <Icon name="fileText" size={11}></Icon>
+              </span>
+              <span className={cx("nav-name")}>{s.title}</span>
+              <span
+                title="删除该侧写档案"
+                className={cx("nav-graph-del")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void removeAgent(s);
+                }}
+              >
+                <Icon name="x" size={11}></Icon>
+              </span>
+            </button>
+          ))}
+          {state.agentSessionsError ? (
+            <div className={cx("nav-graph-err")}>{state.agentSessionsError}</div>
           ) : null}
         </nav>
         {state.platformsMetaError ? (

@@ -1,60 +1,27 @@
 """跨平台关系图搜索、社交展开队列、节点刷新与图谱持久化路由"""
-import difflib
 import json
-import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 from flask import request
 
-from app.credentials import CredentialManager
-from app.platforms import get_adapter, get_pool
+from app.platforms import get_pool
 from app.routes.common import (
-    SEARCH_CACHE_TTL,
     _error,
     _result,
-    _search_cache,
-    _search_cache_lock,
     bp,
     get_store,
 )
 from app.services.expand_queue import get_expand_queue
-from app.services.social_expander import clamp_int, graph_user_node
+from app.services.search_service import (
+    name_similarity as _name_similarity,
+    norm_nickname as _norm_nickname,
+    search_cross_platform,
+    search_user_cached as _search_user_cached,
+)
+from app.services.social_expander import clamp_int
 
 GRAPH_REFRESH_MAX_NODES = 300
 GRAPH_NAME_MAX_LEN = 60
-
-
-def _norm_nickname(name: str) -> str:
-    """昵称归一化：全角转半角、去空白、转小写，用于跨平台同人判定"""
-    s = unicodedata.normalize("NFKC", str(name or ""))
-    return "".join(s.split()).lower()
-
-
-def _name_similarity(a: str, b: str) -> float:
-    if not a or not b:
-        return 0.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
-
-
-def _search_user_cached(pid: str, keyword: str, limit: int, force: bool = False):
-    """带 30 分钟缓存的平台用户搜索（仅缓存成功且非空结果）"""
-    key = (pid, keyword, limit)
-    now = time.time()
-    if not force:
-        with _search_cache_lock:
-            hit = _search_cache.get(key)
-            if hit and now - hit[0] < SEARCH_CACHE_TTL:
-                return list(hit[1]), True
-
-    adapter = get_adapter(pid)
-    if not adapter:
-        return [], False
-    users = adapter.search_user(keyword, limit) or []
-    if users:
-        with _search_cache_lock:
-            _search_cache[key] = (now, list(users))
-    return users, False
 
 
 @bp.route("/graph/search")
@@ -66,11 +33,7 @@ def graph_search():
 
     limit = clamp_int(request.args.get("limit", 10), 3, 20, 10)
     requested = request.args.get("platforms", "").strip()
-    platform_ids = (
-        [p for p in requested.split(",") if p]
-        if requested
-        else [p["id"] for p in CredentialManager.get_available_platforms()]
-    )
+    platform_ids = [p for p in requested.split(",") if p] if requested else None
     refresh = request.args.get("refresh", "").strip() in ("1", "true")
 
     overrides: dict[str, str] = {}
@@ -86,69 +49,16 @@ def graph_search():
                 }
         except (ValueError, TypeError):
             overrides = {}
-    overrides = {k: v for k, v in overrides.items() if k in platform_ids}
 
-    def _search_one(pid: str):
-        try:
-            if not get_adapter(pid):
-                return pid, [], None, False
-            users, from_cache = _search_user_cached(pid, overrides.get(pid) or keyword, limit, force=refresh)
-            return pid, users, None, from_cache
-        except Exception as e:
-            return pid, [], f"[账号：主账号] {e}", False
-
-    results: dict[str, list] = {}
-    errors: dict[str, str] = {}
-    cached_pids: list[str] = []
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(platform_ids)))) as pool:
-        for pid, users, err, from_cache in pool.map(_search_one, platform_ids):
-            results[pid] = users
-            if err:
-                errors[pid] = err
-            if from_cache:
-                cached_pids.append(pid)
-
-    nodes = [{
-        "id": "keyword",
-        "platform": "keyword",
-        "uid": "",
-        "nickname": keyword,
-        "avatarUrl": "",
-        "fans": 0,
-        "signature": "搜索关键词",
-    }]
-    edges: list[dict] = []
-    norm_index: list[dict] = []
-
-    for pid, users in results.items():
-        for u in users:
-            node = graph_user_node(pid, u)
-            if node is None:
-                continue
-            nodes.append(node)
-            edges.append({"source": "keyword", "target": node["id"], "relation": "hit"})
-            norm_index.append({"id": node["id"], "platform": pid, "norm": _norm_nickname(node["nickname"])})
-
-    for i in range(len(norm_index)):
-        for j in range(i + 1, len(norm_index)):
-            a, b = norm_index[i], norm_index[j]
-            if a["platform"] == b["platform"] or not a["norm"] or not b["norm"]:
-                continue
-            if a["norm"] == b["norm"]:
-                edges.append({"source": a["id"], "target": b["id"], "relation": "same"})
-            elif _name_similarity(a["norm"], b["norm"]) >= 0.9:
-                edges.append({"source": a["id"], "target": b["id"], "relation": "alike"})
-
-    return _result({
-        "keyword": keyword,
-        "keywords": overrides,
-        "searched": sorted(platform_ids),
-        "platforms": sorted(pid for pid, users in results.items() if users),
-        "nodes": nodes,
-        "edges": edges,
-        "errors": errors,
-        "cached": sorted(cached_pids),
-    })
+    return _result(
+        search_cross_platform(
+            keyword,
+            platform_ids=platform_ids,
+            limit=limit,
+            refresh=refresh,
+            keyword_overrides=overrides,
+        )
+    )
 
 
 # ==================== 社交展开队列 ====================

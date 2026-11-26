@@ -49,14 +49,16 @@ class DataStore:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """受控的 SQLite 连接上下文：退出时自动 commit/rollback 并关闭连接，避免句柄泄漏"""
-        conn = sqlite3.connect(str(self._db_path))
+        conn = sqlite3.connect(str(self._db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
         with closing(conn):
             with conn:
                 yield conn
 
     def _init_db(self):
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS snapshots (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +126,31 @@ class DataStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_expand_task_graph
                 ON expand_tasks(graph_id, status, id)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_profiles (
+                    id                TEXT    PRIMARY KEY,
+                    title             TEXT    NOT NULL,
+                    target_query      TEXT    DEFAULT '',
+                    focus             TEXT    DEFAULT '',
+                    uids_json         TEXT    NOT NULL DEFAULT '{}',
+                    graph_id          INTEGER,
+                    status            TEXT    NOT NULL DEFAULT 'idle',
+                    model             TEXT    DEFAULT '',
+                    report_markdown   TEXT    DEFAULT '',
+                    structured_json   TEXT    DEFAULT '{}',
+                    evidence_json     TEXT    DEFAULT '{}',
+                    gaps_json         TEXT    DEFAULT '[]',
+                    trace_json        TEXT    DEFAULT '[]',
+                    chat_history_json TEXT    DEFAULT '[]',
+                    error             TEXT    DEFAULT '',
+                    created_at        TEXT    NOT NULL,
+                    updated_at        TEXT    NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_profiles_updated
+                ON agent_profiles(updated_at DESC)
             """)
             conn.commit()
 
@@ -421,6 +448,140 @@ class DataStore:
         """删除一张已保存图谱。返回 True 表示删除成功。"""
         with self._connect() as conn:
             conn.execute("DELETE FROM graphs WHERE id=?", (graph_id,))
+            conn.commit()
+            return conn.total_changes > 0
+
+    # ==================== AI Agent 侧写档案持久化 ====================
+
+    @staticmethod
+    def _decode_agent_profile_row(row: sqlite3.Row, include_detail: bool = True) -> dict:
+        item = dict(row)
+        try:
+            uids = json.loads(item.pop("uids_json") or "{}")
+        except (ValueError, TypeError):
+            uids = {}
+        item["uids"] = uids if isinstance(uids, dict) else {}
+
+        if not include_detail:
+            return item
+
+        for src_col, dst_key, fallback in (
+            ("structured_json", "structured", {}),
+            ("evidence_json", "evidence", {}),
+            ("gaps_json", "gaps", []),
+            ("trace_json", "trace", []),
+            ("chat_history_json", "chat_history", []),
+        ):
+            raw = item.pop(src_col, None)
+            try:
+                parsed = json.loads(raw) if raw else fallback
+            except (ValueError, TypeError):
+                parsed = fallback
+            item[dst_key] = parsed
+        return item
+
+    def create_agent_profile(
+        self,
+        profile_id: str,
+        title: str,
+        *,
+        target_query: str = "",
+        focus: str = "",
+        uids: Optional[dict] = None,
+        graph_id: Optional[int] = None,
+        status: str = "idle",
+        model: str = "",
+    ) -> dict:
+        """创建一条新的 AI 侧写档案记录（profile_id 同时作为 LangGraph thread_id）。"""
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO agent_profiles
+                (id, title, target_query, focus, uids_json, graph_id, status, model,
+                 report_markdown, structured_json, evidence_json, gaps_json,
+                 trace_json, chat_history_json, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '{}', '{}', '[]', '[]', '[]', '', ?, ?)""",
+                (
+                    profile_id,
+                    title,
+                    target_query or "",
+                    focus or "",
+                    json.dumps(uids or {}, ensure_ascii=False),
+                    graph_id,
+                    status,
+                    model or "",
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        return self.get_agent_profile(profile_id)
+
+    def update_agent_profile(self, profile_id: str, **fields) -> Optional[dict]:
+        """按字段增量更新 AI 侧写档案。"""
+        col_map = {
+            "title": ("title", False),
+            "target_query": ("target_query", False),
+            "focus": ("focus", False),
+            "uids": ("uids_json", True),
+            "graph_id": ("graph_id", False),
+            "status": ("status", False),
+            "model": ("model", False),
+            "report_markdown": ("report_markdown", False),
+            "structured": ("structured_json", True),
+            "evidence": ("evidence_json", True),
+            "gaps": ("gaps_json", True),
+            "trace": ("trace_json", True),
+            "chat_history": ("chat_history_json", True),
+            "error": ("error", False),
+        }
+        sets = ["updated_at=?"]
+        params: list = [_now_iso()]
+        for key, value in fields.items():
+            if key not in col_map:
+                continue
+            col, is_json = col_map[key]
+            sets.append(f"{col}=?")
+            params.append(json.dumps(value, ensure_ascii=False) if is_json else value)
+        params.append(profile_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE agent_profiles SET {', '.join(sets)} WHERE id=?",
+                params,
+            )
+            conn.commit()
+        return self.get_agent_profile(profile_id)
+
+    def list_agent_profiles(self) -> list[dict]:
+        """列出所有已保存的 AI 侧写档案元信息（供侧边栏展示）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, target_query, focus, uids_json, graph_id, status, model, "
+                "error, created_at, updated_at, LENGTH(report_markdown) AS report_len "
+                "FROM agent_profiles ORDER BY updated_at DESC, created_at DESC"
+            ).fetchall()
+        out = []
+        for r in rows:
+            item = self._decode_agent_profile_row(r, include_detail=False)
+            item["has_report"] = bool(item.pop("report_len", 0))
+            out.append(item)
+        return out
+
+    def get_agent_profile(self, profile_id: str) -> Optional[dict]:
+        """获取单条 AI 侧写档案的完整数据。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_profiles WHERE id=?",
+                (profile_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._decode_agent_profile_row(row, include_detail=True)
+
+    def delete_agent_profile(self, profile_id: str) -> bool:
+        """删除一条 AI 侧写档案。返回 True 表示删除成功。"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM agent_profiles WHERE id=?", (profile_id,))
             conn.commit()
             return conn.total_changes > 0
 

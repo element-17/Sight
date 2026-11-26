@@ -1,0 +1,130 @@
+.markdown {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+.markdown h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown h2 {
+  font-size: 16px;
+  font-weight: 650;
+  margin: 22px 0 10px;
+  color: var(--text);
+}
+
+.markdown h3 {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+}
+
+.markdown p {
+  margin: 0 0 10px;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.markdown li {
+  margin-bottom: 5px;
+}
+
+.markdown blockquote {
+  margin: 10px 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-hover);
+  border-radius: 0 8px 8px 0;
+  color: var(--text-2);
+}
+
+.markdown pre {
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f2f4f7;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.markdown code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: #f1f3f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+.cite-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  margin: 0 2px;
+  border-radius: 999px;
+  border: 1px solid #c6d7fb;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.cite-btn:hover {
+  background: #dce7fc;
+  border-color: var(--accent);
+}
+
+.conf-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  margin: 0 2px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.conf-high {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.conf-mid {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.conf-low {
+  background: var(--surface-hover);
+  color: var(--text-2);
+}

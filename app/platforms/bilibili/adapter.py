@@ -309,8 +309,12 @@ class BilibiliAdapter(BasePlatformAdapter):
         return items
 
     def get_content_detail(self, item_id: str) -> Optional[dict]:
-        """获取视频详情"""
-        result = self._get("/x/web-interface/view", {"aid": item_id})
+        """获取视频详情（支持数字 aid 或 BV 号）。"""
+        raw = str(item_id or "").strip()
+        if not raw:
+            return None
+        params = {"bvid": raw} if raw.upper().startswith("BV") else {"aid": raw}
+        result = self._get("/x/web-interface/view", params)
         if not result:
             return None
         return {
@@ -322,7 +326,64 @@ class BilibiliAdapter(BasePlatformAdapter):
             "creator": result.get("owner", {}).get("name", ""),
             "createTime": str(result.get("pubdate", "")),
             "subscribedCount": result.get("stat", {}).get("favorite", 0),
+            "aid": str(result.get("aid", "")),
+            "bvid": result.get("bvid", ""),
+            "cid": result.get("cid", 0),
+            "duration": result.get("duration", 0),
+            "media_type": "video",
             "items": [],
+        }
+
+    def get_video_stream_url(self, item_id: str) -> Optional[dict]:
+        """
+        解析 B 站投稿的单文件低码率 MP4 视频流（fnval=1，音画合一），供多模态模型直接观看。
+        支持传入数字 aid 或 BV 号。
+        """
+        detail = self.get_content_detail(item_id)
+        if not detail or not detail.get("cid"):
+            return None
+        cid = detail["cid"]
+        bvid = detail.get("bvid") or ""
+        aid = detail.get("aid") or ""
+        base_params = {"cid": cid, "fnval": 1, "fnver": 0, "fourk": 0, "platform": "html5"}
+        if bvid:
+            base_params["bvid"] = bvid
+        else:
+            base_params["avid"] = aid
+
+        video_urls: list[str] = []
+        chosen_qn = 0
+        # 优先 360p (qn=16) / 480p (qn=32) 以降低下载体积和 Token 消耗，回退 720p (qn=64)
+        for qn in (16, 32, 64):
+            try:
+                play = self._get("/x/player/playurl", {**base_params, "qn": qn})
+            except Exception:
+                continue
+            durls = play.get("durl") or []
+            if not durls or not isinstance(durls[0], dict):
+                continue
+            first = durls[0]
+            if first.get("url"):
+                video_urls.append(str(first["url"]))
+            for bu in first.get("backup_url") or []:
+                if bu and str(bu) not in video_urls:
+                    video_urls.append(str(bu))
+            if video_urls:
+                chosen_qn = int(play.get("quality") or qn)
+                break
+
+        if not video_urls:
+            return None
+        return {
+            "title": detail.get("title", ""),
+            "cover_url": detail.get("coverUrl", ""),
+            "bvid": bvid,
+            "aid": aid,
+            "cid": cid,
+            "duration": detail.get("duration", 0),
+            "qn": chosen_qn,
+            "video_url": video_urls[0],
+            "video_urls": video_urls[:4],
         }
 
 
@@ -373,12 +434,30 @@ class BilibiliAdapter(BasePlatformAdapter):
                         for n in (desc.get("rich_text_nodes") or [])
                     )
 
-                # 提取关联内容
+                # 提取关联内容与动态多图（兼容旧版 draw 与新版 opus 图文动态）
                 media_title = ""
-                if _dict(major.get("archive")):
-                    media_title = major["archive"].get("title", "")
-                elif _dict(major.get("article")):
-                    media_title = major["article"].get("title", "")
+                pics: list[str] = []
+                bvid = ""
+                archive_obj = _dict(major.get("archive"))
+                article_obj = _dict(major.get("article"))
+                draw_obj = _dict(major.get("draw"))
+                opus_obj = _dict(major.get("opus"))
+                if archive_obj:
+                    media_title = archive_obj.get("title", "")
+                    bvid = str(archive_obj.get("bvid") or "")
+                    if archive_obj.get("cover"):
+                        pics.append(str(archive_obj["cover"]))
+                elif article_obj:
+                    media_title = article_obj.get("title", "")
+                for img_item in draw_obj.get("items") or []:
+                    if isinstance(img_item, dict) and img_item.get("src"):
+                        pics.append(str(img_item["src"]))
+                for img_item in opus_obj.get("pics") or []:
+                    if isinstance(img_item, dict) and img_item.get("url"):
+                        pics.append(str(img_item["url"]))
+                if not text_parts and opus_obj:
+                    opus_summary = _dict(opus_obj.get("summary"))
+                    text_parts = str(opus_summary.get("text") or opus_obj.get("title") or "")
 
                 type_str = type_map.get(item.get("type", ""), item.get("type", "动态"))
 
@@ -399,6 +478,8 @@ class BilibiliAdapter(BasePlatformAdapter):
                         "likes": _dict(stat.get("like")).get("count", 0),
                         "comments": _dict(stat.get("comment")).get("count", 0),
                         "forwards": _dict(stat.get("forward")).get("count", 0),
+                        "pics": pics[:9],
+                        "bvid": bvid,
                     },
                 ))
 

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { PLATFORMS, PLATFORM_MAP } from "./platforms";
 import type {
+  AgentSessionMeta,
   CacheStats,
   PlatformData,
   PlatformId,
@@ -84,6 +85,10 @@ interface AppState {
   terminalOpen: boolean;
   terminalTab: "logs" | "queue";
   queues: QueueStatus[];
+  agentSessions: AgentSessionMeta[];
+  activeAgentId: string | null;
+  agentSessionsError: string;
+  llmModalOpen: boolean;
 }
 export const useAppStore = create<AppState>(() => ({
   view: "netease",
@@ -113,6 +118,10 @@ export const useAppStore = create<AppState>(() => ({
   terminalOpen: readStorage("sight_terminal_open") === "1",
   terminalTab: "logs",
   queues: [],
+  agentSessions: [],
+  activeAgentId: null,
+  agentSessionsError: "",
+  llmModalOpen: false,
 }));
 const get = useAppStore.getState;
 const patch = useAppStore.setState;
@@ -126,7 +135,12 @@ export function isPlatformId(value: string): value is PlatformId {
   return !!PLATFORM_MAP[value];
 }
 function validView(value: string): value is ViewId {
-  return value === "timeline" || value === "graph" || isPlatformId(value);
+  return (
+    value === "timeline" ||
+    value === "graph" ||
+    value === "agent" ||
+    isPlatformId(value)
+  );
 }
 function updatePlatform(id: PlatformId, fields: Partial<PlatformData>) {
   patch((s) => ({ data: { ...s.data, [id]: { ...s.data[id], ...fields } } }));
@@ -412,6 +426,42 @@ export function openAccountModal(platform = "") {
 export function closeAccountModal() {
   patch((s) => ({ accountModal: { ...s.accountModal, open: false } }));
 }
+export function openLlmModal() {
+  patch({ llmModalOpen: true });
+}
+export function closeLlmModal() {
+  patch({ llmModalOpen: false });
+}
+export async function loadAgentSessions() {
+  try {
+    const res = await api.get<AgentSessionMeta[]>("/agent/sessions");
+    patch({
+      agentSessions: Array.isArray(res) ? res : [],
+      agentSessionsError: "",
+    });
+  } catch (e) {
+    patch({ agentSessionsError: `侧写列表加载失败：${errorMessage(e)}` });
+  }
+}
+export function setActiveAgentId(activeAgentId: string | null) {
+  patch({ activeAgentId });
+}
+export function openAgentSession(id: string | null) {
+  patch({ activeAgentId: id });
+  if (get().view !== "agent") setView("agent");
+}
+export async function removeAgentSession(id: string) {
+  try {
+    await api.del(`/agent/sessions/${id}`);
+    patch((s) => ({
+      activeAgentId: s.activeAgentId === id ? null : s.activeAgentId,
+      agentSessionsError: "",
+    }));
+  } catch (e) {
+    patch({ agentSessionsError: `删除失败：${errorMessage(e)}` });
+  }
+  await loadAgentSessions();
+}
 export function toggleTerminal(open?: boolean) {
   const value = typeof open === "boolean" ? open : !get().terminalOpen;
   patch({ terminalOpen: value });
@@ -484,6 +534,7 @@ export function initStore() {
     writeStorage("sight_uids", JSON.stringify(get().uids));
     loadCurrentView();
     void loadSavedGraphs();
+    void loadAgentSessions();
     void refreshQueues();
     for (const platform of PLATFORMS) {
       if (disposed) return;

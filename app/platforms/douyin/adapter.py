@@ -423,19 +423,59 @@ class DouyinAdapter(BasePlatformAdapter):
         except (requests.RequestException, ValueError, AttributeError) as e:
             raise RuntimeError(f"[抖音] 获取作品列表失败: {e}") from e
 
+    @staticmethod
+    def _extract_work_media(aweme: dict) -> dict:
+        """从抖音作品 JSON 提取无水印视频流 URL（优先紧凑低码率）与图文多图 URL 列表。"""
+        images: list[str] = []
+        for img in aweme.get("images") or []:
+            if not isinstance(img, dict):
+                continue
+            urls = img.get("url_list") or img.get("download_url_list") or []
+            if urls:
+                images.append(str(urls[0]))
+
+        video = aweme.get("video") if isinstance(aweme.get("video"), dict) else {}
+        video_urls: list[str] = []
+
+        # 优先从 bit_rate 中选码率适中/体积较小的 MP4 流，便于多模态快速拉取
+        bit_rates = [b for b in (video.get("bit_rate") or []) if isinstance(b, dict)]
+        bit_rates.sort(key=lambda b: int((b.get("play_addr") or {}).get("data_size") or b.get("bit_rate") or 10**12))
+        for br in bit_rates:
+            pa = br.get("play_addr") if isinstance(br.get("play_addr"), dict) else {}
+            for u in pa.get("url_list") or []:
+                if u and str(u) not in video_urls:
+                    video_urls.append(str(u))
+
+        for addr_key in ("play_addr", "play_addr_h264", "download_addr"):
+            pa = video.get(addr_key) if isinstance(video.get(addr_key), dict) else {}
+            for u in pa.get("url_list") or []:
+                if u and str(u) not in video_urls:
+                    video_urls.append(str(u))
+
+        video_url = video_urls[0] if video_urls else ""
+        media_type = "images" if images else ("video" if video_url else "unknown")
+        return {
+            "media_type": media_type,
+            "images": images,
+            "video_url": video_url,
+            "video_urls": video_urls[:4],
+        }
+
     def _build_content_item(self, aweme: dict) -> Optional[ContentItem]:
         """从作品 JSON 构建 ContentItem"""
         if not aweme.get("aweme_id"):
             return None
-        video = aweme.get("video", {})
+        video = aweme.get("video", {}) or {}
         cover = video.get("cover", {}) or {}
         cover_urls = cover.get("url_list", []) if isinstance(cover, dict) else []
-        stats = aweme.get("statistics", {})
+        stats = aweme.get("statistics", {}) or {}
+        media = self._extract_work_media(aweme)
+        cover_url = cover_urls[0] if cover_urls else (media["images"][0] if media["images"] else "")
         return ContentItem(
             item_id=str(aweme.get("aweme_id", "")),
             title=(aweme.get("desc") or "无标题")[:200],
-            cover_url=cover_urls[0] if cover_urls else "",
-            count=1,
+            cover_url=cover_url,
+            count=len(media["images"]) if media["images"] else 1,
             view_count=stats.get("play_count", 0),
             creator=aweme.get("author", {}).get("nickname", ""),
             description=(aweme.get("desc") or "")[:200],
@@ -446,6 +486,10 @@ class DouyinAdapter(BasePlatformAdapter):
                 "comment_count": stats.get("comment_count", 0),
                 "digg_count": stats.get("digg_count", 0),
                 "share_count": stats.get("share_count", 0),
+                "media_type": media["media_type"],
+                "images": media["images"],
+                "video_url": media["video_url"],
+                "video_urls": media["video_urls"],
             },
         )
 
@@ -465,19 +509,25 @@ class DouyinAdapter(BasePlatformAdapter):
             aweme = resp.get("aweme_detail", {})
             if not aweme:
                 return None
-            video = aweme.get("video", {})
+            video = aweme.get("video", {}) or {}
             cover = video.get("cover", {}) or {}
             cover_urls = cover.get("url_list", []) if isinstance(cover, dict) else []
-            stats = aweme.get("statistics", {})
+            stats = aweme.get("statistics", {}) or {}
+            media = self._extract_work_media(aweme)
             return {
                 "title": (aweme.get("desc") or "无标题")[:200],
-                "coverUrl": cover_urls[0] if cover_urls else "",
-                "count": 1,
+                "coverUrl": cover_urls[0] if cover_urls else (media["images"][0] if media["images"] else ""),
+                "count": len(media["images"]) if media["images"] else 1,
                 "viewCount": stats.get("play_count", 0),
                 "description": (aweme.get("desc") or "")[:500],
                 "creator": aweme.get("author", {}).get("nickname", ""),
                 "createTime": str(aweme.get("create_time", "")),
                 "subscribedCount": stats.get("collect_count", 0),
+                "media_type": media["media_type"],
+                "images": media["images"],
+                "video_url": media["video_url"],
+                "video_urls": media["video_urls"],
+                "duration": video.get("duration", 0),
                 "items": [],
             }
         except RuntimeError:

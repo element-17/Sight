@@ -33,7 +33,7 @@
 - **时序快照 Diff 与行为演化时间线**：持久化各时间节点的公开状态快照，通过逐对集合 Diff 自动推断跨时段变更窗口，并以 `dedup_key` 幂等落库，支持统一时间线检索与导出。
 - **交互式社交关系图谱**：后端按平台隔离异步展开队列（内置速率限制、连续失败 5 次自动熔断与 `skip` 断点续拉），前端基于 **ECharts 6** 增量轮询并动态渲染实体关联网络。
 - **实时运行终端（SSE）**：通过 `log_hub` 环形缓冲实时镜像后端任务与适配器运行状态，借助 Server-Sent Events 推送至前端可视化终端。
-- **AI Agent 智能实体侧写（Roadmap）**：规划将平台检索、时序对比与图谱扩展封装为标准 Agent Tools，结合证据溯源自动生成一站式结构化实体画像报告。
+- **AI Agent 原生多模态人物侧写（LangGraph + Gemini）**：基于 LangGraph `StateGraph` 与独立 SQLite Checkpointer，同时支持 **Google Gemini 原生多模态**（`google-genai` + `langchain-google-genai`，原生看图与看短视频/听语音）及任意 **OpenAI 兼容接口**；内置本机防盗链媒体缓存（`media_fetcher`）、跨平台头像/背景视觉基线、`inspect_images` 图集侦查与 `inspect_video`（抖音/小红书/B站/微博）短视频分析工具；支持「面板账号直通」与「关键词搜人 → 原生 `interrupt()` 人工确认断点」双入口，输出带 `[E#]` 可点击图文证据溯源与零幻觉校验的深度侧写报告，并支持同一档案的多轮追问。
 
 ---
 
@@ -172,9 +172,10 @@ npm run build                   # 构建生产产物至 app/web/
 ```text
 Sight/
 ├── app/
+│   ├── agent/                   # LangGraph 人物侧写 StateGraph、Tools、确定性统计器、SSE Runner 与 LLM 配置
 │   ├── routes/                  # 模块化 REST / SSE Blueprint 路由（统一异常转 JSON 边界）
 │   ├── platforms/               # 适配器抽象基类、AdapterPool 池化管理与 8 平台实现
-│   ├── services/                # timeline 时序 Diff、social_expander、异步展开队列、log_hub
+│   ├── services/                # platform_fetcher、search_service、timeline、social_expander、expand_queue、log_hub
 │   ├── data/store.py            # SQLite 快照 / 时间线 / 图谱 / 任务状态存储
 │   ├── credentials/             # 本地凭证管理
 │   └── web/                     # 前端生产构建静态产物
