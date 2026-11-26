@@ -67,10 +67,15 @@ class DouyinAdapter(BasePlatformAdapter):
         self._user_cache: dict[str, dict] = {}
         # 短时作品缓存（60s），避免 /all 先拉 playlists 再拉 events 时重复爬取全部作品
         self._works_cache: dict[str, tuple[float, list[ContentItem]]] = {}
+        # 短时登录态缓存（10s），避免 check_alive + get_login_user 连续调用重复探测
+        self._login_user_cache: Optional[dict] = None
+        self._login_user_cache_at: float = 0.0
+        self._last_login_error: str = ""
 
     # ==================== 用户信息缓存（TTL 30 分钟） ====================
 
     USER_CACHE_TTL = 30 * 60  # 粉丝数/作品数等随 raw_user 一起缓存，过期必须重拉
+    _LOGIN_CACHE_TTL = 10.0
 
     def _cache_get_user(self, uid: str) -> Optional[dict]:
         info = self._user_cache.get(uid)
@@ -90,21 +95,28 @@ class DouyinAdapter(BasePlatformAdapter):
         clear_mstoken()
         works_n = len(self._works_cache)
         self._works_cache.clear()
+        self._login_user_cache = None
+        self._login_user_cache_at = 0.0
+        self._last_login_error = ""
         return {"用户信息缓存": len(self._user_cache), "作品缓存": works_n}
 
     def test_account(self) -> dict:
-        """抖音凭证深探测：get_my_uid 对过期旧 session 也能通过（账号弹窗曾据此误判可用），
-        社交列表接口的登录校验更严，这里补一步列表探测抓住这种"假 alive"。"""
-        result = super().test_account()
-        if not result.get("ok"):
-            return result
+        """抖音凭证深探测：先用 /user/profile/self/ 校验真实登录态，再用社交列表接口复核。"""
+        cookies = self._load_cookies()
+        if not cookies:
+            return {"ok": False, "error": "未配置 Cookie，请从 douyin.com 复制完整 Cookie"}
+        user = self._fetch_login_user(force=True)
+        if not user:
+            return {"ok": False, "error": self._last_login_error or "凭证无效或已过期，请更新 Cookie"}
+
+        result: dict = {"ok": True, "login_user": user}
         try:
-            uid = str((result.get("login_user") or {}).get("uid") or "")
+            uid = str(user.get("uid") or "")
             if uid:
                 self.get_follows(uid, limit=1)
         except Exception as e:
             msg = str(e)
-            if "未登录" in msg:
+            if "未登录" in msg or "登录态" in msg:
                 result["ok"] = False
                 result["error"] = msg
             else:
@@ -214,53 +226,69 @@ class DouyinAdapter(BasePlatformAdapter):
 
     # ==================== Status ====================
 
-    def check_alive(self) -> bool:
-        """检查凭证是否有效 — 调用 get_my_uid 验证"""
+    def _fetch_login_user(self, force: bool = False) -> Optional[dict]:
+        """调用 /aweme/v1/web/user/profile/self/ 真实校验登录态并获取当前登录用户。
+
+        不能用 get_my_uid (/aweme/v1/web/query/user/)：该接口按设备 web_id 查历史绑定，
+        Cookie 过期/登出后依然返回 status_code=0 和旧 user_uid，会导致前端侧边栏误报绿灯。
+        """
         cookies = self._load_cookies()
         if not cookies:
-            return False
+            self._login_user_cache = None
+            self._login_user_cache_at = 0.0
+            self._last_login_error = "未配置抖音 Cookie"
+            return None
+
+        now = time.time()
+        if not force and self._login_user_cache_at > 0 and (now - self._login_user_cache_at) < self._LOGIN_CACHE_TTL:
+            return self._login_user_cache
+
+        user_info: Optional[dict] = None
         try:
-            uid = DouyinAPI.get_my_uid(self.auth)
-            return bool(uid)
+            res = DouyinAPI.get_my_profile(self.auth)
+            status_code = res.get("status_code", 0) if isinstance(res, dict) else -1
+            raw_user = res.get("user") if isinstance(res, dict) and isinstance(res.get("user"), dict) else None
+            if status_code == 0 and raw_user and raw_user.get("uid"):
+                uid = str(raw_user.get("uid"))
+                sec_uid = str(raw_user.get("sec_uid") or "")
+                nickname = str(raw_user.get("nickname") or "")
+                avatar_url = self._extract_avatar_url(raw_user)
+                if sec_uid:
+                    setattr(self.auth, "sec_uid", sec_uid)
+                user_info = {
+                    "uid": uid,
+                    "sec_uid": sec_uid,
+                    "nickname": nickname or f"用户{uid}",
+                    "avatarUrl": avatar_url,
+                }
+                self._last_login_error = ""
+                print(f"[抖音] get_login_user: {user_info['nickname']} (uid={uid})")
+            else:
+                status_msg = str((res or {}).get("status_msg") or "").strip() if isinstance(res, dict) else ""
+                self._last_login_error = (
+                    f"[抖音] {status_msg or f'登录态已失效 (status_code={status_code})'}，请更新 Cookie"
+                )
+        except Exception as e:
+            self._last_login_error = f"[抖音] 登录态校验失败: {e}"
+            print(f"[抖音] _fetch_login_user 失败: {e}")
+
+        self._login_user_cache = user_info
+        self._login_user_cache_at = time.time()
+        return user_info
+
+    def check_alive(self) -> bool:
+        """检查凭证是否有效 — 通过 /user/profile/self/ 真实校验会话，拒绝过期旧 session 的假活"""
+        try:
+            return bool(self._fetch_login_user(force=True))
         except Exception:
             return False
 
     def get_login_user(self) -> Optional[dict]:
-        """获取当前登录用户信息 — 参考 DouYin_Spider main.py 的 auth 初始化"""
+        """获取当前登录用户信息（未登录或 Cookie 失效时返回 None，不从旧 Cookie 伪造）"""
         try:
-            uid = str(DouyinAPI.get_my_uid(self.auth))
-            # get_my_sec_uid 可能失败（HTML格式变化），兜底
-            sec_uid = ""
-            try:
-                sec_uid = DouyinAPI.get_my_sec_uid(self.auth)
-            except Exception:
-                pass
-            # 获取用户信息
-            profile = None
-            if sec_uid:
-                profile = self.get_profile(sec_uid)
-            elif uid:
-                profile = self.get_profile(uid)
-            nickname = profile.nickname if profile else ""
-            avatar_url = profile.avatar_url if profile else ""
-            result = {
-                "uid": uid,
-                "sec_uid": sec_uid,
-                "nickname": nickname or f"用户{uid}",
-                "avatarUrl": avatar_url,
-            }
-            print(f"[抖音] get_login_user: {result['nickname']} (uid={uid})")
-            return result
+            return self._fetch_login_user(force=False)
         except Exception as e:
             print(f"[抖音] get_login_user 失败: {e}")
-            # 兜底：从 Cookie 获取基础信息
-            cookies = self._load_cookies()
-            uid_tt = cookies.get("uid_tt", "")
-            if uid_tt:
-                return {"uid": uid_tt, "sec_uid": "", "nickname": "", "avatarUrl": ""}
-            sessionid = cookies.get("sessionid", "")
-            if sessionid:
-                return {"uid": f"session_{sessionid[:8]}", "sec_uid": "", "nickname": "", "avatarUrl": ""}
             return None
 
     # ==================== 用户搜索 ====================

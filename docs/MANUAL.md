@@ -56,6 +56,8 @@ refresh_user_info / check_alive / get_login_user`。
   （msToken/dtrait/bd_ticket）在 `ref_builder/`、`ref_utils/`。
 - 数字 UID 双策略解析（先直查、失败后与登录用户比对）——上游只支持 sec_uid，
   这是面板能从登录态起步的关键。
+- 存活检测（`check_alive` / `get_login_user`）走 `/aweme/v1/web/user/profile/self/` 强登录态校验，
+  禁止用 `/aweme/v1/web/query/user/`（登出或 Cookie 过期后仍按设备 `web_id` 返回历史 `user_uid`，会导致前端误报绿灯）。
 - 他人关注/粉丝普遍受限（status_code 2096 / mix_count 有值但列表空），
   转成明确 RuntimeError，不当成"没有关注任何人"。
 - 限速 2s/次且持锁串行化（图谱接口会并发调用适配器）。

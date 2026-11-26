@@ -734,6 +734,38 @@ class DouyinAPI:
 
 
     @staticmethod
+    def get_my_profile(auth, **kwargs) -> dict:
+        """
+        获取当前登录用户的自身资料（强登录态校验）。
+
+        相比 `/aweme/v1/web/query/user/`（设备 web_id 维度，登出/过期后仍会返回历史 user_uid），
+        `/aweme/v1/web/user/profile/self/` 会真实校验登录会话：
+        有效会话返回 `status_code=0` 及 `user` 对象；失效/未登录返回 `status_code=8`（用户未登录）且 `user=null`。
+        """
+        api = '/aweme/v1/web/user/profile/self/'
+        refer = 'https://www.douyin.com/user/self'
+        headers = HeaderBuilder().build(HeaderType.GET)
+        headers.set_referer(refer)
+        headers.with_uifid(auth)
+        params = Params()
+        params.add_param('publish_video_strategy_type', '2')
+        params.add_param('source', 'channel_pc_web')
+        params.with_platform()
+        params.with_web_id(auth, refer)
+        params.with_uifid(auth)
+        params.add_param('msToken', auth.msToken)
+        params.with_a_bogus()
+        resp = requests.get(
+            f'{DouyinAPI.douyin_url}{api}',
+            params=params.get(),
+            verify=False,
+            headers=headers.get(),
+            cookies=auth.cookie,
+        )
+        check_risk_response(resp)
+        return resp.json()
+
+    @staticmethod
     def get_my_uid(auth, **kwargs) -> int:
         """
         获取自己的用户ID.

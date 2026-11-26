@@ -528,6 +528,39 @@ class DouyinScrapingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "无法获取该用户的关注/粉丝列表"):
                 self.adapter.get_followers("MS4wLjABAAAA_test_sec")
 
+    def test_check_alive_rejects_expired_cookie_and_accepts_valid_self_profile(self):
+        with patch.object(self.adapter, "_load_cookies", return_value={"sessionid": "expired_sid", "uid_tt": "u_old"}), \
+             patch("app.platforms.douyin.adapter.DouyinAPI") as api_mock:
+            # 模拟过期 Cookie：get_my_uid 仍返回历史 uid，但 profile/self 返回 status_code=8 用户未登录
+            api_mock.get_my_uid.return_value = 3402315065201417
+            api_mock.get_my_profile.return_value = {
+                "status_code": 8,
+                "status_msg": "用户未登录",
+                "user": None,
+            }
+            self.assertFalse(self.adapter.check_alive())
+            self.assertIsNone(self.adapter.get_login_user())
+            test_res = self.adapter.test_account()
+            self.assertFalse(test_res["ok"])
+            self.assertIn("用户未登录", test_res["error"])
+
+            # 模拟有效 Cookie：profile/self 返回 status_code=0 与完整登录用户信息
+            api_mock.get_my_profile.return_value = {
+                "status_code": 0,
+                "user": {
+                    "uid": "3402315065201417",
+                    "sec_uid": "MS4wLjABAAAA_valid_sec",
+                    "nickname": "抖音正常号",
+                    "avatar_thumb": {"url_list": ["https://p3.douyinpic.com/me.jpg"]},
+                },
+            }
+            self.assertTrue(self.adapter.check_alive())
+            login_user = self.adapter.get_login_user()
+            self.assertEqual(login_user["uid"], "3402315065201417")
+            self.assertEqual(login_user["sec_uid"], "MS4wLjABAAAA_valid_sec")
+            self.assertEqual(login_user["nickname"], "抖音正常号")
+            self.assertEqual(login_user["avatarUrl"], "https://p3.douyinpic.com/me.jpg")
+
 class QQMusicScrapingTests(unittest.TestCase):
     """QQ音乐抓取与 SSR 解码测试"""
 
