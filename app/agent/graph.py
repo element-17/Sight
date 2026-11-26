@@ -34,6 +34,7 @@ from app.agent.analyzers import (
     compute_activity_stats,
     extract_citation_ids,
 )
+from app.agent.graph_explorer import score_and_prune_candidates, seed_social_workspace
 from app.agent.llm_config import DEFAULT_MAX_STEPS, build_chat_model, format_llm_error, load_effective_config
 from app.agent.multimodal import VISUAL_BASELINE_PROMPT, analyze_images
 from app.agent.prompts import (
@@ -426,13 +427,16 @@ def compile_profile_graph(
             except Exception as e:
                 new_gaps.append({"platform": "multi", "category": "graph", "reason": str(e), "error_kind": "unknown"})
 
-        # 确定性统计计算（作息热力 + 社交网络核心圈）
+        # 确定性统计计算（作息热力 + 社交网络核心圈 + 初始剪枝工作区）
         activity_stats = compute_activity_stats(raw_payloads, timeline_entries=timeline_rows)
         social_stats = analyze_social_network(
             graph_data=graph_data,
             platform_payloads=raw_payloads,
             target_accounts=accounts,
         )
+        social_workspace = seed_social_workspace(accounts, raw_payloads, graph_data=graph_data)
+        initial_pruned = score_and_prune_candidates(social_workspace, top_k=15)
+        social_workspace["pruned"] = initial_pruned["pruned_map"]
         if activity_stats["total_timed_events"] > 0:
             peak_str = ", ".join(f"{h:02d}:00" for h in activity_stats["peak_hours"]) or "分散"
             _alloc_evidence(
@@ -611,6 +615,11 @@ def compile_profile_graph(
                 "mutual_core_contacts": social_stats["mutual_core_contacts"][:10],
                 "followed_public_accounts": social_stats["followed_public_accounts"][:8],
                 "cross_platform_links": social_stats["cross_platform_links"][:10],
+                "pruned_social_preview": {
+                    "total_nodes": initial_pruned["total_nodes"],
+                    "pruned_count": initial_pruned["pruned_summary"]["total_pruned"],
+                    "top_candidates": initial_pruned["priority_candidates"][:8],
+                },
             },
             "known_gaps": new_gaps,
         }
@@ -619,8 +628,8 @@ def compile_profile_graph(
 
         all_ev = {**existing_evidence, **new_evidence}
         prompt_text = (
-            "以下是目标的跨平台基线摘要、视觉基线（若有）与确定性统计特征，请你审视是否存在值得深挖的线索"
-            "（如 B 站评论/弹幕存档、代表性歌单/仓库/笔记详情、图文多模态 inspect_images、短视频多模态 inspect_video、历史时间线、跨平台线索或社交采样）：\n\n"
+            "以下是目标的跨平台基线摘要、视觉基线（若有）、初步剪枝社交候选与确定性统计特征，请你审视是否存在值得深挖的线索"
+            "（如 `explore_social_network` 智能剪枝与三角闭合互查、`probe_social_candidate` 单点 2-hop 核验、B 站评论/弹幕存档、代表性歌单/仓库/笔记详情、图文多模态 `inspect_images`、短视频多模态 `inspect_video`/`compare_videos`、历史时间线或跨平台搜索）：\n\n"
             f"## 现有证据编号索引\n{_format_evidence_catalog(all_ev)}\n\n"
             f"## 基线数据\n{wrap_untrusted_data('baseline_bundle', brief_payload, max_chars=14000)}"
         )
@@ -630,6 +639,7 @@ def compile_profile_graph(
             "baseline_summaries": summaries,
             "baseline_stats": baseline_stats,
             "media_catalog": media_catalog,
+            "social_workspace": social_workspace,
             "evidence": new_evidence,
             "gaps": new_gaps,
             "step_count": 0,
@@ -707,9 +717,11 @@ def compile_profile_graph(
 
         existing_ev = dict(state.get("evidence") or {})
         existing_catalog = dict(state.get("media_catalog") or {})
+        existing_social_ws = dict(state.get("social_workspace") or {})
         confirmed_accounts = dict(state.get("confirmed_accounts") or {})
         added_ev: dict[str, dict[str, Any]] = {}
         added_catalog: dict[str, dict[str, Any]] = {}
+        latest_social_ws: Optional[dict[str, Any]] = None
         added_gaps: list[dict[str, Any]] = []
         tool_messages: list[ToolMessage] = []
         traces: list[dict[str, Any]] = []
@@ -732,6 +744,7 @@ def compile_profile_graph(
             t0 = time.perf_counter()
             merged_now = {**existing_ev, **added_ev}
             merged_catalog = {**existing_catalog, **added_catalog}
+            cur_social_ws = latest_social_ws if latest_social_ws is not None else existing_social_ws
             content_text, ev_map, gaps, exec_res = dispatch_tool_call(
                 tname,
                 targs,
@@ -739,12 +752,15 @@ def compile_profile_graph(
                 merged_now,
                 media_catalog=merged_catalog,
                 confirmed_accounts=confirmed_accounts,
+                social_workspace=cur_social_ws,
             )
             elapsed_ms = round((time.perf_counter() - t0) * 1000)
 
             added_ev.update(ev_map)
             if exec_res.media_catalog_updates:
                 added_catalog.update(exec_res.media_catalog_updates)
+            if exec_res.social_workspace_update:
+                latest_social_ws = exec_res.social_workspace_update
             added_gaps.extend(gaps)
             tool_messages.append(ToolMessage(content=content_text, tool_call_id=tc_id, name=tname))
 
@@ -769,6 +785,8 @@ def compile_profile_graph(
         }
         if added_catalog:
             out_update["media_catalog"] = added_catalog
+        if latest_social_ws is not None:
+            out_update["social_workspace"] = latest_social_ws
         return out_update
 
     def execute_tools(state: ProfileAgentState) -> dict[str, Any]:

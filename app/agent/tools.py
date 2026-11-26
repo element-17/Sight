@@ -17,8 +17,13 @@ from typing import Any, Optional
 from langchain_core.tools import tool
 
 from app.agent.analyzers import analyze_social_network
+from app.agent.graph_explorer import (
+    build_exportable_graph_data,
+    merge_social_workspace,
+    score_and_prune_candidates,
+)
 from app.agent.llm_config import PROVIDER_GEMINI, load_effective_config
-from app.agent.multimodal import analyze_images, analyze_video
+from app.agent.multimodal import analyze_images, analyze_video, compare_videos_content
 from app.agent.state import next_evidence_id, wrap_untrusted_data
 from app.credentials import CredentialManager, _PLATFORM_NAMES
 from app.data.store import DataStore
@@ -57,6 +62,7 @@ class ToolExecResult:
     evidence_items: list[dict[str, Any]] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
     media_catalog_updates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    social_workspace_update: Optional[dict[str, Any]] = None
     error_kind: str = ""
     error: str = ""
 
@@ -1459,6 +1465,473 @@ def exec_inspect_video(
         )
 
 
+def exec_explore_social_network(
+    store: DataStore,
+    platform: str,
+    uid: str,
+    focus_keywords: Optional[list[str]] = None,
+    celebrity_fans_threshold: int = 20000,
+    intercheck_top_k: int = 8,
+    save_graph_name: str = "",
+    social_workspace: Optional[dict[str, Any]] = None,
+) -> ToolExecResult:
+    """
+    Agent 驱动的智能剪枝社交图谱探索（先剪枝、再定向 2-hop 三角闭合互查）：
+    1. 拉取目标的关注/粉丝样本并并入工作区；
+    2. 依据粉丝量级、认证标记、机构关键词与 LLM 线索词剪枝剔除大 V 与噪声；
+    3. 仅对剪枝后的 Top-K 高置信候选执行邻居互查（intercheck），识别圈内三角闭合互连；
+    4. 自动将精简剪枝子图持久化到 SQLite saved_graphs，前端可一键在 ECharts 关系图谱中打开。
+    """
+    pid = (platform or "").strip()
+    uid = (uid or "").strip()
+    pname = _PLATFORM_NAMES.get(pid, pid)
+    if not pid or not uid:
+        return ToolExecResult(ok=False, summary_text="参数不足", error_kind="invalid_arg", error="platform 与 uid 均不能为空")
+
+    celeb_cap = max(1000, min(int(celebrity_fans_threshold or 20000), 500000))
+    top_k = max(0, min(int(intercheck_top_k if intercheck_top_k is not None else 8), 10))
+    kw_list = [str(k).strip() for k in (focus_keywords or []) if str(k).strip()][:10]
+
+    try:
+        hop1 = expand_social(
+            {
+                "platform": pid,
+                "uid": uid,
+                "follows_limit": 60,
+                "followers_limit": 40,
+                "intercheck_limit": 0,
+            }
+        )
+        hop1_nodes = {n["id"]: n for n in (hop1.get("nodes") or []) if isinstance(n, dict) and n.get("id")}
+        target_nid = f"{pid}:{uid}"
+        hop1_nodes.setdefault(
+            target_nid,
+            {"id": target_nid, "platform": pid, "uid": uid, "nickname": uid, "fans": 0, "is_target": True},
+        )
+        working_ws = merge_social_workspace(
+            social_workspace,
+            {
+                "nodes": hop1_nodes,
+                "edges": hop1.get("edges") or [],
+                "target_ids": [target_nid],
+            },
+        )
+
+        # Hop-1 剪枝评分：先剔除大 V 与机构号，再决定把 2-hop 互查配额花在谁身上
+        scored1 = score_and_prune_candidates(
+            working_ws,
+            platform_filter=pid,
+            focus_keywords=kw_list,
+            celebrity_fans_threshold=celeb_cap,
+            top_k=25,
+        )
+        working_ws = merge_social_workspace(working_ws, {"pruned": scored1["pruned_map"]})
+
+        # Hop-2 定向三角闭合互查：仅查剪枝后的 Top-K 候选，绝不浪费配额在大 V 身上
+        intercheck_uids = scored1["recommended_intercheck_uids"][:top_k]
+        intercheck_edges: list[dict[str, str]] = []
+        if intercheck_uids:
+            try:
+                hop2 = expand_social(
+                    {
+                        "platform": pid,
+                        "uid": uid,
+                        "follows_limit": 0,
+                        "followers_limit": 0,
+                        "known_ids": list(working_ws["nodes"].keys()),
+                        "intercheck_extra": intercheck_uids,
+                        "intercheck_limit": len(intercheck_uids),
+                        "intercheck_follow_limit": 40,
+                    }
+                )
+                intercheck_edges = (hop2.get("intercheck") or {}).get("edges") or []
+                working_ws = merge_social_workspace(
+                    working_ws,
+                    {
+                        "edges": intercheck_edges,
+                        "probed_ids": [f"{pid}:{u}" for u in intercheck_uids],
+                    },
+                )
+            except Exception:
+                pass
+
+        # 引入三角闭合边后重新全局打分
+        scored2 = score_and_prune_candidates(
+            working_ws,
+            focus_keywords=kw_list,
+            celebrity_fans_threshold=celeb_cap,
+            top_k=25,
+        )
+        working_ws = merge_social_workspace(working_ws, {"pruned": scored2["pruned_map"]})
+
+        # 导出并保存可直接在前端 ECharts 关系图谱中打开的剪枝子图
+        saved_graph_id = working_ws.get("saved_graph_id")
+        target_nick = str((working_ws["nodes"].get(target_nid) or {}).get("nickname") or uid)
+        gname = (save_graph_name or "").strip() or working_ws.get("saved_graph_name") or f"AI剪枝 · {target_nick} ({pname})"
+        export_data = build_exportable_graph_data(working_ws, keyword=target_nick, scored=scored2)
+        if len(export_data.get("nodes") or []) >= 2:
+            try:
+                saved_graph_id = store.save_graph(gname, target_nick, export_data)
+                working_ws = merge_social_workspace(
+                    working_ws,
+                    {"saved_graph_id": saved_graph_id, "saved_graph_name": gname},
+                )
+            except Exception:
+                pass
+
+        gaps = [
+            {
+                "platform": pid,
+                "category": f"social_explore:{direction}",
+                "reason": str(err),
+                "error_kind": classify_error(str(err)),
+            }
+            for direction, err in (hop1.get("errors") or {}).items()
+        ]
+        core = scored2["core_circle"]
+        pruned_total = scored2["pruned_summary"]["total_pruned"]
+        snippet = (
+            f"共扫描 {scored2['total_nodes']} 节点，智能剪枝剔除 {pruned_total} 个大V/机构噪声，"
+            f"定向互查 {len(intercheck_uids)} 人发现 {len(intercheck_edges)} 条圈内互连边；"
+            f"高置信核心圈: "
+            + (
+                "、".join(
+                    f"{c['nickname']}({c['score']}:{'+'.join(c['reasons'][:2])})"
+                    for c in core[:6]
+                )
+                or "暂无明显高分互关节点"
+            )
+        )
+        ev_items = [
+            {
+                "platform": pid,
+                "platform_name": pname,
+                "uid": uid,
+                "category": "pruned_social_network",
+                "title": f"{pname} 智能剪枝社交图谱（剔除 {pruned_total} 噪声 / 锁定 {len(core)} 核心候选）",
+                "snippet": snippet[:480],
+                "url": "",
+                "timestamp": "",
+            }
+        ]
+        return ToolExecResult(
+            ok=True,
+            summary_text=f"{pname} 智能剪枝探索完成：剪枝 {pruned_total} 噪声，互查 {len(intercheck_uids)} 人，发现 {len(intercheck_edges)} 条三角互连",
+            data={
+                "platform": pid,
+                "uid": uid,
+                "hop1_counts": hop1.get("counts"),
+                "interchecked_count": len(intercheck_uids),
+                "new_triangle_edges": len(intercheck_edges),
+                "total_triangle_edges": scored2["triangle_edges_count"],
+                "pruned_summary": scored2["pruned_summary"],
+                "core_circle": core[:12],
+                "priority_candidates": scored2["priority_candidates"][:15],
+                "saved_graph_id": saved_graph_id,
+                "saved_graph_name": gname if saved_graph_id else "",
+                "errors": hop1.get("errors") or {},
+            },
+            evidence_items=ev_items,
+            gaps=gaps,
+            social_workspace_update=working_ws,
+        )
+    except Exception as e:
+        err = str(e)
+        return ToolExecResult(
+            ok=False,
+            summary_text=f"{pname} 智能剪枝图谱探索失败",
+            error_kind=classify_error(err),
+            error=err,
+            gaps=[{"platform": pid, "category": "social_explore", "reason": err, "error_kind": classify_error(err)}],
+        )
+
+
+def exec_probe_social_candidate(
+    store: DataStore,
+    platform: str,
+    candidate_uid: str,
+    target_uid: str = "",
+    focus_keywords: Optional[list[str]] = None,
+    social_workspace: Optional[dict[str, Any]] = None,
+) -> ToolExecResult:
+    """
+    2-hop 单点深度核验某个高分非大 V 候选节点：
+    拉取其公开资料与关注样本，计算与目标已知圈子的共同关注重叠度与双向互关确认，并合入剪枝图谱工作区。
+    """
+    pid = (platform or "").strip()
+    cid = (candidate_uid or "").strip()
+    tid = (target_uid or "").strip()
+    pname = _PLATFORM_NAMES.get(pid, pid)
+    if not pid or not cid:
+        return ToolExecResult(ok=False, summary_text="参数不足", error_kind="invalid_arg", error="platform 与 candidate_uid 均不能为空")
+
+    try:
+        adapter = get_adapter(pid)
+        profile_dict: dict[str, Any] = {}
+        if adapter:
+            try:
+                prof = adapter.get_profile(cid)
+                if prof:
+                    from app.platforms.base import dataclass_to_dict
+
+                    profile_dict = dataclass_to_dict(prof)
+            except Exception:
+                pass
+
+        hop = expand_social(
+            {
+                "platform": pid,
+                "uid": cid,
+                "follows_limit": 40,
+                "followers_limit": 0,
+                "intercheck_limit": 0,
+            }
+        )
+        cand_nid = f"{pid}:{cid}"
+        existing_nodes = (social_workspace or {}).get("nodes") or {}
+        existing_ids = set(existing_nodes.keys())
+        target_ids = set((social_workspace or {}).get("target_ids") or [])
+        if tid:
+            target_ids.add(f"{pid}:{tid}")
+
+        cand_follows_nodes = hop.get("nodes") or []
+        followed_ids = {n["id"] for n in cand_follows_nodes if isinstance(n, dict) and n.get("id")}
+        follows_target = any(t in followed_ids for t in target_ids)
+        shared_ids = sorted((followed_ids & existing_ids) - target_ids - {cand_nid})
+        shared_contacts = [
+            {
+                "id": nid,
+                "nickname": str((existing_nodes.get(nid) or {}).get("nickname") or nid),
+                "fans": (existing_nodes.get(nid) or {}).get("fans") or 0,
+            }
+            for nid in shared_ids[:15]
+        ]
+
+        # 只把候选节点本身 + 命中已有圈子的重合边写入工作区（防止 2-hop 节点爆炸！）
+        cand_node = {
+            "id": cand_nid,
+            "platform": pid,
+            "uid": cid,
+            "nickname": str(profile_dict.get("nickname") or (existing_nodes.get(cand_nid) or {}).get("nickname") or cid),
+            "avatarUrl": str(profile_dict.get("avatar_url") or ""),
+            "signature": str(profile_dict.get("signature") or "")[:160],
+            "location": str(profile_dict.get("location") or ""),
+        }
+        pruned_edges = [
+            {"source": cand_nid, "target": dst_id, "relation": "follows"}
+            for dst_id in (shared_ids + [t for t in target_ids if t in followed_ids])
+        ]
+        ws_update = merge_social_workspace(
+            social_workspace,
+            {
+                "nodes": {cand_nid: cand_node},
+                "edges": pruned_edges,
+                "probed_ids": [cand_nid],
+            },
+        )
+
+        # 若已存在保存过的剪枝图谱，顺手刷新落盘
+        if ws_update.get("saved_graph_name"):
+            try:
+                scored_now = score_and_prune_candidates(ws_update, focus_keywords=focus_keywords)
+                export_data = build_exportable_graph_data(ws_update, keyword=ws_update["saved_graph_name"], scored=scored_now)
+                gid = store.save_graph(ws_update["saved_graph_name"], ws_update["saved_graph_name"], export_data)
+                ws_update = merge_social_workspace(ws_update, {"saved_graph_id": gid})
+            except Exception:
+                pass
+
+        nick = cand_node["nickname"]
+        snippet = (
+            f"候选「{nick}」({pname}:{cid})"
+            + (f" | 地区: {cand_node['location']}" if cand_node.get("location") else "")
+            + (f" | 签名: {cand_node['signature'][:80]}" if cand_node.get("signature") else "")
+            + f" | 回关目标: {'是' if follows_target else '未在关注样本前40中命中'}"
+            + f" | 共同关注重合: {len(shared_contacts)} 人"
+            + (
+                "（" + "、".join(c["nickname"] for c in shared_contacts[:6]) + "）"
+                if shared_contacts
+                else ""
+            )
+        )
+        return ToolExecResult(
+            ok=True,
+            summary_text=f"完成 {pname} 候选节点「{nick}」2-hop 核验（共同关注 {len(shared_contacts)} 人）",
+            data={
+                "candidate": cand_node,
+                "follows_target": follows_target,
+                "follows_sampled": len(cand_follows_nodes),
+                "shared_contacts_count": len(shared_contacts),
+                "shared_contacts": shared_contacts,
+                "errors": hop.get("errors") or {},
+            },
+            evidence_items=[
+                {
+                    "platform": pid,
+                    "platform_name": pname,
+                    "uid": cid,
+                    "category": "social_candidate_probe",
+                    "title": f"{pname} 候选节点 2-hop 核验：{nick}",
+                    "snippet": snippet[:480],
+                    "url": "",
+                    "timestamp": "",
+                }
+            ],
+            social_workspace_update=ws_update,
+        )
+    except Exception as e:
+        err = str(e)
+        return ToolExecResult(
+            ok=False,
+            summary_text=f"核验 {pname} 候选节点 {cid} 失败",
+            error_kind=classify_error(err),
+            error=err,
+            gaps=[{"platform": pid, "category": "social_candidate_probe", "reason": err, "error_kind": classify_error(err)}],
+        )
+
+
+def exec_compare_videos(
+    store: DataStore,
+    platform: str,
+    item_ids: list[str],
+    focus: str = "",
+    media_catalog: Optional[dict[str, Any]] = None,
+    confirmed_accounts: Optional[dict[str, str]] = None,
+) -> ToolExecResult:
+    """
+    使用 Gemini 原生多模态能力横向对比同一平台 2~3 条公开短视频的内容主题、
+    拍摄/剪辑风格、场景设备与公开表达习惯（仅限非生物特征公开创作维度）。
+    """
+    pid = (platform or "").strip()
+    pname = _PLATFORM_NAMES.get(pid, pid)
+    clean_ids = [str(x).strip() for x in (item_ids or []) if str(x).strip()][:3]
+    if not pid or len(clean_ids) < 2:
+        return ToolExecResult(
+            ok=False,
+            summary_text="参数不足",
+            error_kind="invalid_arg",
+            error="compare_videos 需要指定 platform 以及至少 2 个 item_id（最多 3 个）",
+        )
+    if pid not in ("douyin", "xhs", "bilibili", "weibo"):
+        return ToolExecResult(
+            ok=False,
+            summary_text=f"{pname} 暂不支持视频流解析",
+            error_kind="capability_unsupported",
+            error="目前仅支持 douyin、xhs、bilibili、weibo 平台的视频多模态对比",
+        )
+
+    cfg = load_effective_config()
+    if not cfg["configured"] or not cfg["enable_multimodal"] or cfg["provider"] != PROVIDER_GEMINI:
+        err = "多视频原生对比需要启用多模态并切换至「Gemini 原生」模型提供商"
+        return ToolExecResult(
+            ok=False,
+            summary_text="当前模型不支持多视频原生对比",
+            error_kind="capability_unsupported",
+            error=err,
+            gaps=[{"platform": pid, "category": "visual_video_compare", "reason": err, "error_kind": "capability_unsupported"}],
+        )
+
+    catalog = _lookup_platform_catalog(store, pid, media_catalog, confirmed_accounts)
+    downloaded_videos: list[tuple[str, CachedMedia]] = []
+    thumb_urls: list[str] = []
+    warnings: list[str] = []
+
+    for tid in clean_ids:
+        entry = _find_catalog_item(catalog, tid) or {}
+        title = str(entry.get("title") or entry.get("content") or tid)[:60]
+        cover_url = str(entry.get("cover_url") or "")
+        video_urls = _dedupe_urls(entry.get("video_urls") or [])
+        for v in _dedupe_urls(entry.get("video_url") or ""):
+            if v not in video_urls:
+                video_urls.insert(0, v)
+
+        try:
+            adapter = get_adapter(pid)
+            if pid == "bilibili" and adapter and hasattr(adapter, "get_video_stream_url"):
+                stream_info = adapter.get_video_stream_url(str(entry.get("bvid") or tid))
+                if isinstance(stream_info, dict):
+                    video_urls = _dedupe_urls(stream_info.get("video_urls") or stream_info.get("video_url") or []) + video_urls
+                    if not cover_url and stream_info.get("cover_url"):
+                        cover_url = str(stream_info["cover_url"])
+            elif not video_urls and pid in ("xhs", "douyin") and adapter:
+                detail = (
+                    adapter.get_content_detail(tid, xsec_token=str(entry.get("xsec_token") or ""))
+                    if pid == "xhs"
+                    else adapter.get_content_detail(tid)
+                )
+                if isinstance(detail, dict):
+                    video_urls = _dedupe_urls(detail.get("video_urls") or detail.get("video_url") or [])
+                    if not cover_url and (detail.get("cover_url") or detail.get("coverUrl")):
+                        cover_url = str(detail.get("cover_url") or detail.get("coverUrl"))
+        except Exception as e:
+            warnings.append(f"{tid}: {e}")
+
+        vid_media: Optional[CachedMedia] = None
+        for u in _dedupe_urls(video_urls)[:3]:
+            try:
+                vid_media = download_media(u, platform=pid, kind="video", max_bytes=MAX_VIDEO_BYTES, timeout=45)
+                break
+            except Exception as e:
+                warnings.append(f"{tid}: {e}")
+        if vid_media is not None:
+            downloaded_videos.append((f"{pname}《{title}》({tid})", vid_media))
+            if cover_url:
+                try:
+                    cm = download_media(cover_url, platform=pid, kind="image")
+                    thumb_urls.append(cm.preview_url)
+                except Exception:
+                    pass
+
+    if len(downloaded_videos) < 2:
+        reason = "; ".join(warnings[:3]) or "成功下载的视频不足 2 条，无法执行横向对比"
+        return ToolExecResult(
+            ok=False,
+            summary_text=f"{pname} 多视频下载不足 2 条",
+            error_kind=classify_error(reason),
+            error=reason,
+            gaps=[{"platform": pid, "category": "visual_video_compare", "reason": reason, "error_kind": classify_error(reason)}],
+        )
+
+    try:
+        res = compare_videos_content(
+            downloaded_videos,
+            focus or "对比这些公开视频在主题领域、拍摄剪辑风格、场景物品与语音表达上的一致性与演变趋势。",
+        )
+        return ToolExecResult(
+            ok=True,
+            summary_text=f"已完成 {pname} {len(downloaded_videos)} 条公开视频的横向风格与内容对比",
+            data={
+                "platform": pid,
+                "compared_videos": [lbl for lbl, _ in downloaded_videos],
+                "provider": res["provider"],
+                "model": res["model"],
+                "analysis": res["analysis"],
+                "warnings": warnings[:3],
+            },
+            evidence_items=[
+                {
+                    "platform": pid,
+                    "platform_name": pname,
+                    "uid": ",".join(clean_ids),
+                    "category": "visual_video_compare",
+                    "title": f"{pname} 多视频横向内容与风格对比（{len(downloaded_videos)} 条）",
+                    "snippet": res["analysis"][:480],
+                    "url": "",
+                    "timestamp": "",
+                    "media_urls": thumb_urls,
+                }
+            ],
+        )
+    except Exception as e:
+        err = str(e)
+        return ToolExecResult(
+            ok=False,
+            summary_text=f"{pname} 多视频横向对比失败",
+            error_kind=classify_error(err),
+            error=err,
+            gaps=[{"platform": pid, "category": "visual_video_compare", "reason": err, "error_kind": classify_error(err)}],
+        )
+
+
 # ==================== LangChain Tool Schema 绑定 + 统一调度 ====================
 
 
@@ -1563,6 +2036,54 @@ def build_tool_schemas(store: DataStore) -> list:
         res = exec_inspect_video(store, platform=platform, item_id=item_id, focus=focus)
         return json.dumps(res.data if res.ok else {"error": res.error}, ensure_ascii=False)
 
+    @tool
+    def compare_videos(
+        platform: str,
+        item_ids: list[str],
+        focus: str = "",
+    ) -> str:
+        """使用 Gemini 原生多模态能力横向对比 2~3 条公开短视频的内容主题、拍摄剪辑风格、场景设备与公开表达习惯（仅限非生物特征公开创作维度）。"""
+        res = exec_compare_videos(store, platform=platform, item_ids=item_ids, focus=focus)
+        return json.dumps(res.data if res.ok else {"error": res.error}, ensure_ascii=False)
+
+    @tool
+    def explore_social_network(
+        platform: str,
+        uid: str,
+        focus_keywords: Optional[list[str]] = None,
+        celebrity_fans_threshold: int = 20000,
+        intercheck_top_k: int = 8,
+        save_graph_name: str = "",
+    ) -> str:
+        """智能剪枝社交图谱探索：先按粉丝阈值、认证大V与机构号规则剪枝，再仅对高分非大V候选执行 2-hop 三角闭合互查（发掘共同关联圈），并自动保存可打开的剪枝关系子图。focus_keywords 可传入你推断的地域/行业/兴趣线索词。"""
+        res = exec_explore_social_network(
+            store,
+            platform=platform,
+            uid=uid,
+            focus_keywords=focus_keywords,
+            celebrity_fans_threshold=celebrity_fans_threshold,
+            intercheck_top_k=intercheck_top_k,
+            save_graph_name=save_graph_name,
+        )
+        return json.dumps(res.data if res.ok else {"error": res.error}, ensure_ascii=False)
+
+    @tool
+    def probe_social_candidate(
+        platform: str,
+        candidate_uid: str,
+        target_uid: str = "",
+        focus_keywords: Optional[list[str]] = None,
+    ) -> str:
+        """对单个高分非大V候选节点做 2-hop 核验：查看其公开资料、是否回关目标、以及与目标已知圈子的共同关注重叠度。"""
+        res = exec_probe_social_candidate(
+            store,
+            platform=platform,
+            candidate_uid=candidate_uid,
+            target_uid=target_uid,
+            focus_keywords=focus_keywords,
+        )
+        return json.dumps(res.data if res.ok else {"error": res.error}, ensure_ascii=False)
+
     return [
         list_platform_status,
         search_users,
@@ -1572,8 +2093,11 @@ def build_tool_schemas(store: DataStore) -> list:
         get_timeline,
         analyze_social_graph,
         fetch_social_sample,
+        explore_social_network,
+        probe_social_candidate,
         inspect_images,
         inspect_video,
+        compare_videos,
     ]
 
 
@@ -1585,6 +2109,7 @@ def dispatch_tool_call(
     *,
     media_catalog: Optional[dict[str, Any]] = None,
     confirmed_accounts: Optional[dict[str, str]] = None,
+    social_workspace: Optional[dict[str, Any]] = None,
 ) -> tuple[str, dict[str, dict[str, Any]], list[dict[str, Any]], ToolExecResult]:
     """
     执行单次工具调用，自动分配新证据编号 [E#]，并将返回文本用 <untrusted_user_data> 隔离。
@@ -1662,6 +2187,44 @@ def dispatch_tool_call(
                 focus=str(args.get("focus") or ""),
                 media_catalog=media_catalog,
                 confirmed_accounts=confirmed_accounts,
+            )
+        elif tool_name == "compare_videos":
+            raw_vids = args.get("item_ids")
+            if isinstance(raw_vids, str):
+                raw_vids = [raw_vids]
+            res = exec_compare_videos(
+                store,
+                platform=str(args.get("platform") or ""),
+                item_ids=raw_vids if isinstance(raw_vids, list) else [],
+                focus=str(args.get("focus") or ""),
+                media_catalog=media_catalog,
+                confirmed_accounts=confirmed_accounts,
+            )
+        elif tool_name == "explore_social_network":
+            kws = args.get("focus_keywords")
+            if isinstance(kws, str):
+                kws = [kws]
+            res = exec_explore_social_network(
+                store,
+                platform=str(args.get("platform") or ""),
+                uid=str(args.get("uid") or ""),
+                focus_keywords=kws if isinstance(kws, list) else None,
+                celebrity_fans_threshold=args.get("celebrity_fans_threshold", 20000),
+                intercheck_top_k=args.get("intercheck_top_k", 8),
+                save_graph_name=str(args.get("save_graph_name") or ""),
+                social_workspace=social_workspace,
+            )
+        elif tool_name == "probe_social_candidate":
+            kws = args.get("focus_keywords")
+            if isinstance(kws, str):
+                kws = [kws]
+            res = exec_probe_social_candidate(
+                store,
+                platform=str(args.get("platform") or ""),
+                candidate_uid=str(args.get("candidate_uid") or ""),
+                target_uid=str(args.get("target_uid") or ""),
+                focus_keywords=kws if isinstance(kws, list) else None,
+                social_workspace=social_workspace,
             )
         else:
             res = ToolExecResult(

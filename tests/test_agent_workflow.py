@@ -1142,6 +1142,161 @@ class MultimodalPipelineTests(unittest.TestCase):
         self.assertEqual(len(vis_ev), 1)
         self.assertEqual(vis_ev[0]["media_urls"], [cached_img.preview_url])
 
+    def test_pruned_social_graph_explorer_probe_and_multi_video_compare(self):
+        from types import SimpleNamespace
+        from app.agent.graph_explorer import (
+            build_exportable_graph_data,
+            score_and_prune_candidates,
+            seed_social_workspace,
+        )
+        from app.agent.tools import (
+            exec_compare_videos,
+            exec_explore_social_network,
+            exec_probe_social_candidate,
+        )
+        from app.services.media_fetcher import CachedMedia
+
+        # 1. 验证确定性剪枝 + 三角闭合与线索词打分
+        ws = seed_social_workspace(
+            {"bilibili": "100"},
+            {
+                "bilibili": {
+                    "profile": {"nickname": "目标用户", "signature": "杭州独立游戏开发"},
+                    "events": [{"content": "周末和 @老同学A 一起打球"}],
+                    "follows": [
+                        {"uid": "201", "nickname": "老同学A", "fans": 180, "is_verified": False, "signature": "杭州程序员"},
+                        {"uid": "202", "nickname": "共同好友B", "fans": 320, "is_verified": False, "signature": "独立游戏美术"},
+                        {"uid": "901", "nickname": "超大V博主", "fans": 850000, "is_verified": True, "signature": "科技大V"},
+                        {"uid": "902", "nickname": "某品牌官方号", "fans": 3500, "is_verified": False, "signature": "官方账号"},
+                    ],
+                    "followers": [
+                        {"uid": "201", "nickname": "老同学A", "fans": 180, "is_verified": False},
+                    ],
+                }
+            },
+        )
+        scored = score_and_prune_candidates(ws, focus_keywords=["杭州", "独立游戏"])
+        pruned_ids = set(scored["pruned_map"].keys())
+        self.assertIn("bilibili:901", pruned_ids)
+        self.assertIn("bilibili:902", pruned_ids)
+        self.assertNotIn("bilibili:201", pruned_ids)
+        self.assertEqual(scored["core_circle"][0]["uid"], "201")
+        self.assertIn("201", scored["recommended_intercheck_uids"])
+        self.assertNotIn("901", scored["recommended_intercheck_uids"])
+
+        # 2. 验证 explore_social_network 只对剪枝后的非大V候选做定向 2-hop 互查，并自动落库剪枝子图
+        def _fake_expand(body):
+            if body.get("follows_limit", 0) > 0:
+                return {
+                    "nodes": [
+                        {"id": "bilibili:201", "platform": "bilibili", "uid": "201", "nickname": "老同学A", "fans": 180, "verified": False, "signature": "杭州"},
+                        {"id": "bilibili:202", "platform": "bilibili", "uid": "202", "nickname": "共同好友B", "fans": 320, "verified": False, "signature": "独立游戏"},
+                        {"id": "bilibili:901", "platform": "bilibili", "uid": "901", "nickname": "超大V博主", "fans": 850000, "verified": True, "signature": ""},
+                    ],
+                    "edges": [
+                        {"source": "bilibili:100", "target": "bilibili:201", "relation": "follows"},
+                        {"source": "bilibili:201", "target": "bilibili:100", "relation": "follows"},
+                        {"source": "bilibili:100", "target": "bilibili:202", "relation": "follows"},
+                        {"source": "bilibili:100", "target": "bilibili:901", "relation": "follows"},
+                    ],
+                    "counts": {"follows": 3, "followers": 1},
+                    "intercheck": {"checked": 0, "edges": []},
+                    "errors": {},
+                }
+            # Hop-2 定向互查：确认 901 绝不会被送进 intercheck_extra
+            self.assertNotIn("901", body.get("intercheck_extra") or [])
+            return {
+                "nodes": [],
+                "edges": [],
+                "counts": {"follows": 0, "followers": 0},
+                "intercheck": {
+                    "checked": len(body.get("intercheck_extra") or []),
+                    "edges": [{"source": "bilibili:201", "target": "bilibili:202", "relation": "follows"}],
+                },
+                "errors": {},
+            }
+
+        with patch("app.agent.tools.expand_social", side_effect=_fake_expand):
+            res_exp = exec_explore_social_network(
+                self.store,
+                "bilibili",
+                "100",
+                focus_keywords=["杭州", "独立游戏"],
+                intercheck_top_k=5,
+                save_graph_name="AI剪枝测试图",
+            )
+        self.assertTrue(res_exp.ok)
+        self.assertEqual(res_exp.data["new_triangle_edges"], 1)
+        self.assertIsNotNone(res_exp.data["saved_graph_id"])
+        saved_g = self.store.get_graph(res_exp.data["saved_graph_id"])
+        self.assertIsNotNone(saved_g)
+        saved_node_ids = {n["id"] for n in saved_g["data"]["nodes"]}
+        self.assertIn("bilibili:201", saved_node_ids)
+        self.assertNotIn("bilibili:901", saved_node_ids)
+
+        # 3. 验证 probe_social_candidate 单点 2-hop 共同关注重叠度核验
+        fake_probe_expand = {
+            "nodes": [
+                {"id": "bilibili:100", "platform": "bilibili", "uid": "100", "nickname": "目标用户"},
+                {"id": "bilibili:201", "platform": "bilibili", "uid": "201", "nickname": "老同学A"},
+                {"id": "bilibili:9999", "platform": "bilibili", "uid": "9999", "nickname": "陌生路人"},
+            ],
+            "edges": [],
+            "errors": {},
+        }
+        with patch("app.agent.tools.expand_social", return_value=fake_probe_expand), patch(
+            "app.agent.tools.get_adapter",
+            return_value=SimpleNamespace(
+                get_profile=lambda uid: PlatformProfile(
+                    platform="bilibili", uid=uid, nickname="共同好友B", signature="独立游戏美术", location="杭州"
+                )
+            ),
+        ):
+            res_probe = exec_probe_social_candidate(
+                self.store,
+                "bilibili",
+                "202",
+                target_uid="100",
+                social_workspace=res_exp.social_workspace_update,
+            )
+        self.assertTrue(res_probe.ok)
+        self.assertTrue(res_probe.data["follows_target"])
+        self.assertEqual(res_probe.data["shared_contacts_count"], 1)
+        self.assertEqual(res_probe.data["shared_contacts"][0]["id"], "bilibili:201")
+        # 陌生路人 9999 未被拉进剪枝工作区，防止 2-hop 节点爆炸
+        self.assertNotIn("bilibili:9999", res_probe.social_workspace_update["nodes"])
+
+        # 4. 验证 compare_videos 多视频公开内容横向对比
+        save_llm_config({"provider": "gemini", "api_key": "AIzaFakeKey123", "model": "gemini-2.5-flash", "enable_multimodal": True})
+        v1 = Path(self.tmpdir.name) / "v1.mp4"
+        v2 = Path(self.tmpdir.name) / "v2.mp4"
+        v1.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"1" * 32)
+        v2.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"2" * 32)
+        cm1 = CachedMedia("111111111111111111111111", "https://ex/1.mp4", v1, "video/mp4", v1.stat().st_size, "video", "douyin")
+        cm2 = CachedMedia("222222222222222222222222", "https://ex/2.mp4", v2, "video/mp4", v2.stat().st_size, "video", "douyin")
+        vid_catalog = {
+            "douyin": {
+                "platform": "douyin",
+                "uid": "d1",
+                "items": {
+                    "aw1": {"item_id": "aw1", "title": "桌搭1", "video_url": "https://ex/1.mp4", "video_urls": ["https://ex/1.mp4"]},
+                    "aw2": {"item_id": "aw2", "title": "桌搭2", "video_url": "https://ex/2.mp4", "video_urls": ["https://ex/2.mp4"]},
+                },
+                "events": [],
+            }
+        }
+        fake_gem = SimpleNamespace(
+            models=SimpleNamespace(generate_content=lambda model, contents, config=None: SimpleNamespace(text="两条视频均聚焦极简桌搭与键帽评测，剪辑节奏明快。")),
+            files=SimpleNamespace(upload=None, get=None, delete=None),
+        )
+        with patch("app.agent.tools.download_media", side_effect=lambda u, **kw: cm1 if "1.mp4" in u else cm2), patch(
+            "app.agent.multimodal.build_gemini_client", return_value=fake_gem
+        ):
+            res_cmp = exec_compare_videos(self.store, "douyin", ["aw1", "aw2"], media_catalog=vid_catalog)
+        self.assertTrue(res_cmp.ok)
+        self.assertEqual(len(res_cmp.data["compared_videos"]), 2)
+        self.assertIn("极简桌搭", res_cmp.data["analysis"])
+
 
 if __name__ == "__main__":
     unittest.main()

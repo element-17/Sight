@@ -544,6 +544,34 @@ export interface AgentProfileMeta {
   }>;
   blind_spots?: string[];
 }
+export interface AgentPrunedCandidate {
+  id: string;
+  platform: string;
+  platform_name: string;
+  uid: string;
+  nickname: string;
+  fans: number;
+  verified: boolean;
+  signature?: string;
+  relation: string;
+  triangle_links?: number;
+  probed?: boolean;
+  score: number;
+  reasons: string[];
+}
+export interface AgentPrunedGraph {
+  total_nodes: number;
+  total_edges: number;
+  triangle_edges_count: number;
+  pruned_summary?: {
+    total_pruned: number;
+    by_reason: Record<string, number>;
+    samples?: Array<{ id: string; nickname: string; reason: string; fans?: number }>;
+  };
+  core_circle: AgentPrunedCandidate[];
+  saved_graph_id?: number | null;
+  saved_graph_name?: string;
+}
 export interface AgentStructured {
   profile_meta?: AgentProfileMeta;
   baseline_stats?: {
@@ -553,6 +581,7 @@ export interface AgentStructured {
     graph_name?: string;
     timeline_count?: number;
   };
+  pruned_graph?: AgentPrunedGraph;
   citation_report?: {
     total_evidence: number;
     cited_valid: string[];

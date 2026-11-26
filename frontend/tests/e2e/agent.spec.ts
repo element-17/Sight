@@ -46,6 +46,10 @@ test("AI profiling workspace: LLM config, bound-account profiling, evidence jump
   await expect(page.getByText("常驻杭州的开源开发者", { exact: true })).toBeVisible();
   await expect(page.getByText("深夜活跃型（夜猫子）", { exact: true })).toBeVisible();
   await expect(page.getByText("核心互关好友 · GitHub", { exact: true })).toBeVisible();
+  await expect(page.getByText(/AI 智能剪枝关系圈/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "在关系图谱中查看剪枝子图", exact: true }),
+  ).toBeVisible();
 
   // 3. 点击报告中的 [E1] 证据角标，右侧自动切换至证据账本并展示多模态缩略图
   await page.locator("article, section").getByRole("button", { name: "E1", exact: true }).first().click();

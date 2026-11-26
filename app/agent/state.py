@@ -10,6 +10,8 @@ from typing import Annotated, Any, Optional, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
+from app.agent.graph_explorer import merge_social_workspace
+
 
 def merge_evidence(
     left: dict[str, dict[str, Any]] | None,
@@ -149,6 +151,7 @@ class ProfileAgentState(TypedDict, total=False):
     baseline_summaries: dict[str, dict[str, Any]]
     baseline_stats: dict[str, Any]
     media_catalog: Annotated[dict[str, dict[str, Any]], merge_media_catalog]
+    social_workspace: Annotated[dict[str, Any], merge_social_workspace]
 
     # 证据账本 & 信息盲区
     evidence: Annotated[dict[str, dict[str, Any]], merge_evidence]

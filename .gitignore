@@ -58,3 +58,7 @@ frontend/playwright-report/
 # Release build artifacts
 release/
 app/VERSION
+
+# Local agent skills & promo video scratch workspace
+.agents/
+docs/video/

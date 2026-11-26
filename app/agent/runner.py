@@ -23,6 +23,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from app.agent.graph import compile_profile_graph
+from app.agent.graph_explorer import score_and_prune_candidates
 from app.agent.llm_config import DEFAULT_MAX_STEPS, format_llm_error, load_effective_config
 from app.agent.state import extract_text_content
 from app.credentials import _PLATFORM_NAMES
@@ -668,6 +669,21 @@ class AgentRunManager:
             structured["citation_report"] = values["citation_report"]
         if values.get("candidate_accounts"):
             structured["candidate_accounts"] = values["candidate_accounts"]
+        social_ws = values.get("social_workspace")
+        if isinstance(social_ws, dict) and (social_ws.get("nodes") or social_ws.get("saved_graph_id")):
+            try:
+                scored_ws = score_and_prune_candidates(social_ws, top_k=15)
+                structured["pruned_graph"] = {
+                    "total_nodes": scored_ws["total_nodes"],
+                    "total_edges": scored_ws["total_edges"],
+                    "triangle_edges_count": scored_ws["triangle_edges_count"],
+                    "pruned_summary": scored_ws["pruned_summary"],
+                    "core_circle": scored_ws["core_circle"][:12],
+                    "saved_graph_id": social_ws.get("saved_graph_id"),
+                    "saved_graph_name": social_ws.get("saved_graph_name") or "",
+                }
+            except Exception:
+                pass
 
         if interrupted_payload is not None:
             structured["pending_interrupt"] = interrupted_payload

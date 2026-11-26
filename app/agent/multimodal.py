@@ -264,3 +264,86 @@ def analyze_video(
                 client.files.delete(name=uploaded_name)
             except Exception:
                 pass
+
+
+def compare_videos_content(
+    videos: list[tuple[str, CachedMedia]],
+    prompt: str,
+    *,
+    overrides: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    使用 Google Gemini 原生多模态能力横向对比 2~3 条公开短视频的内容主题、
+    拍摄/剪辑风格、场景道具与公开表达习惯（严禁生物特征/人脸身份识别）。
+    """
+    if not videos:
+        raise ValueError("没有可供对比的视频样本")
+
+    cfg = load_effective_config(overrides)
+    if not cfg["configured"]:
+        raise RuntimeError("尚未配置可用的 LLM 模型")
+    if not cfg["enable_multimodal"]:
+        raise RuntimeError("当前模型配置已关闭多模态分析")
+    if cfg["provider"] != PROVIDER_GEMINI:
+        raise RuntimeError(
+            "多视频原生多模态对比需要切换到「Gemini 原生」提供商（请在右上角「模型配置」中切换）"
+        )
+
+    from google.genai import types
+
+    client = build_gemini_client(overrides, timeout=max(int(cfg["timeout"]), 150))
+    task_prompt = (
+        _MULTIMODAL_SAFETY_HEADER
+        + "【隐私与非生物特征约束】仅从公开内容创作与社区画像视角横向对比以下多条公开视频的：\n"
+        "1. 重复出现的内容主题、垂直领域、兴趣偏好；\n"
+        "2. 拍摄构图、剪辑节奏、配乐/字幕风格与制作水准的一致性；\n"
+        "3. 画面环境/物品/设备（如桌搭、乐器、户外装备等）与语音口吻/常用口头禅的公开风格特征。\n"
+        "严禁进行人脸生物特征比对、长相评判或臆测个人真实身份/隐私信息。\n\n"
+        + (prompt or "请给出简洁、客观、可溯源的跨视频共性与差异分析（300~500字）。")
+    )
+
+    uploaded_names: list[str] = []
+    contents: list[Any] = [task_prompt]
+    try:
+        for idx, (label, vid) in enumerate(videos[:3], start=1):
+            contents.append(f"\n--- 视频样本 {idx}: {label} ---")
+            if vid.size_bytes <= INLINE_VIDEO_MAX_BYTES:
+                contents.append(types.Part.from_bytes(data=vid.read_bytes(), mime_type=vid.mime_type))
+            else:
+                up = client.files.upload(file=str(vid.path), config={"mime_type": vid.mime_type})
+                uname = getattr(up, "name", "")
+                if uname:
+                    uploaded_names.append(uname)
+                deadline = time.monotonic() + FILES_API_POLL_TIMEOUT
+                current = up
+                while True:
+                    state = _file_state_name(current)
+                    if not state or state == "ACTIVE":
+                        break
+                    if state == "FAILED":
+                        raise RuntimeError(f"Gemini Files API 处理视频 {label} 失败")
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(f"Gemini Files API 处理视频 {label} 超时")
+                    time.sleep(1.5)
+                    current = client.files.get(name=uname)
+                contents.append(current)
+
+        resp = client.models.generate_content(
+            model=cfg["model"],
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=min(float(cfg["temperature"]), 0.3),
+            ),
+        )
+        return {
+            "analysis": _extract_genai_text(resp) or "（模型未返回多视频对比文本）",
+            "provider": PROVIDER_GEMINI,
+            "model": cfg["model"],
+            "video_count": len(videos[:3]),
+        }
+    finally:
+        for uname in uploaded_names:
+            try:
+                client.files.delete(name=uname)
+            except Exception:
+                pass

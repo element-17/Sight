@@ -197,6 +197,32 @@ export async function installMockApi(page: Page) {
         cited_valid: ["E1", "E2"],
         removed_invalid: [],
       },
+      pruned_graph: {
+        total_nodes: 18,
+        total_edges: 22,
+        triangle_edges_count: 3,
+        pruned_summary: {
+          total_pruned: 12,
+          by_reason: { "官方认证/公众账号": 7, "高粉公众账号 (≥20000 粉)": 5 },
+        },
+        core_circle: [
+          {
+            id: "github:peer1",
+            platform: "github",
+            platform_name: "GitHub",
+            uid: "peer1",
+            nickname: "核心互关好友",
+            fans: 32,
+            verified: false,
+            relation: "mutual",
+            triangle_links: 2,
+            score: 0.88,
+            reasons: ["与目标双向互关", "圈内三角闭合 ×2"],
+          },
+        ],
+        saved_graph_id: 1,
+        saved_graph_name: "AI剪枝 · 示例开发者",
+      },
     },
     evidence: {
       E1: {

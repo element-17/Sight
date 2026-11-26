@@ -14,7 +14,9 @@ import { classNames } from "../classes";
 import { PLATFORMS, PLATFORM_MAP } from "../platforms";
 import {
   loadAgentSessions,
+  loadSavedGraphs,
   openLlmModal,
+  openSavedGraph,
   setActiveAgentId,
   useAppStore,
 } from "../store";
@@ -548,6 +550,7 @@ export default function ViewAgent() {
   const profileMeta = session?.structured?.profile_meta;
   const activityStats = session?.structured?.baseline_stats?.activity;
   const socialStats = session?.structured?.baseline_stats?.social;
+  const prunedGraph = session?.structured?.pruned_graph;
   const citationReport = session?.structured?.citation_report;
   const displayMarkdown = streamReport || session?.report_markdown || "";
 
@@ -1026,6 +1029,67 @@ export default function ViewAgent() {
               {/* 24h 作息分布 ECharts 图表 */}
               {activityStats && activityStats.total_timed_events > 0 ? (
                 <ActivityChart stats={activityStats} />
+              ) : null}
+
+              {/* AI 智能剪枝关系圈卡片（支持一键跳转 ECharts 关系图谱） */}
+              {prunedGraph &&
+              (prunedGraph.core_circle?.length ||
+                prunedGraph.saved_graph_id ||
+                (prunedGraph.pruned_summary?.total_pruned || 0) > 0) ? (
+                <section className={`card ${cx("social-card")}`}>
+                  <div className={cx("pruned-head")}>
+                    <div>
+                      <div className={cx("social-section-title")} style={{ marginBottom: 2 }}>
+                        AI 智能剪枝关系圈（{prunedGraph.total_nodes} 节点 / 剪枝剔除{" "}
+                        {prunedGraph.pruned_summary?.total_pruned || 0} 个大V或机构噪声
+                        {prunedGraph.triangle_edges_count > 0
+                          ? ` / ${prunedGraph.triangle_edges_count} 条三角闭合互连`
+                          : ""}
+                        ）
+                      </div>
+                      {prunedGraph.pruned_summary?.by_reason &&
+                      Object.keys(prunedGraph.pruned_summary.by_reason).length > 0 ? (
+                        <div className={cx("pruned-sub")}>
+                          已自动过滤：
+                          {Object.entries(prunedGraph.pruned_summary.by_reason)
+                            .map(([reason, cnt]) => `${reason} ×${cnt}`)
+                            .join(" · ")}
+                        </div>
+                      ) : null}
+                    </div>
+                    {prunedGraph.saved_graph_id ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        onClick={() => {
+                          void loadSavedGraphs();
+                          void openSavedGraph(prunedGraph.saved_graph_id!);
+                        }}
+                      >
+                        <Icon name="graph" size={12} />
+                        在关系图谱中查看剪枝子图
+                      </button>
+                    ) : null}
+                  </div>
+                  {prunedGraph.core_circle?.length > 0 ? (
+                    <div className={cx("pruned-grid")}>
+                      {prunedGraph.core_circle.slice(0, 10).map((c) => (
+                        <div key={c.id} className={cx("pruned-item")}>
+                          <div className={cx("pruned-item-top")}>
+                            <span className={cx("pruned-nick")}>{c.nickname}</span>
+                            <span className="chip">{c.platform_name}</span>
+                            <span className="tag">关联度 {Math.round(c.score * 100)}%</span>
+                          </div>
+                          {c.reasons?.length ? (
+                            <div className={cx("pruned-reasons")}>
+                              {c.reasons.join(" · ")}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
               ) : null}
 
               {/* 核心社交关系摘要 */}
