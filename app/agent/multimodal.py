@@ -20,6 +20,7 @@ from typing import Any, Optional
 from langchain_core.messages import HumanMessage
 
 from app.agent.llm_config import (
+    PROVIDER_ANTHROPIC,
     PROVIDER_GEMINI,
     build_chat_model,
     build_gemini_client,
@@ -111,6 +112,38 @@ def analyze_images(
         return {
             "analysis": analysis or "（模型未返回视觉分析文本）",
             "provider": PROVIDER_GEMINI,
+            "model": cfg["model"],
+            "media_count": len(media_items),
+        }
+
+    # Anthropic Messages 协议：使用 Claude 原生 base64 image block（支持 JPEG/PNG/GIF/WebP）
+    if cfg["provider"] == PROVIDER_ANTHROPIC:
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": full_prompt}]
+        for idx, (label, media) in enumerate(media_items, start=1):
+            b64 = base64.b64encode(media.read_bytes()).decode("ascii")
+            mime = media.mime_type if media.mime_type in (
+                "image/jpeg",
+                "image/png",
+                "image/gif",
+                "image/webp",
+            ) else "image/jpeg"
+            blocks.append({"type": "text", "text": f"[图片 {idx}] {label}"})
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": b64,
+                    },
+                }
+            )
+        llm = build_chat_model(overrides, streaming=False)
+        resp = llm.invoke([HumanMessage(content=blocks)])
+        analysis = extract_text_content(resp.content).strip()
+        return {
+            "analysis": analysis or "（模型未返回视觉分析文本）",
+            "provider": PROVIDER_ANTHROPIC,
             "model": cfg["model"],
             "media_count": len(media_items),
         }

@@ -134,4 +134,99 @@ describe("AI Agent frontend components", () => {
     expect(sentBody.base_url).toBe("");
     expect(sentBody.enable_multimodal).toBe(true);
   });
+
+  it("supports Anthropic protocol selection and fetching/selecting from available models", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith("/agent/config") && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          ok({
+            provider: "openai_compatible",
+            base_url: "https://api.openai.com/v1",
+            model: "gpt-4o-mini",
+            temperature: 0.2,
+            max_steps: 8,
+            timeout: 90,
+            enable_multimodal: true,
+            supports_vision: true,
+            supports_video: false,
+            has_api_key: false,
+            api_key_preview: "",
+            api_key_source: "none",
+            is_local: false,
+            configured: false,
+            presets: [
+              {
+                id: "anthropic_sonnet",
+                name: "Claude Sonnet (Anthropic 协议)",
+                provider: "anthropic",
+                base_url: "https://api.anthropic.com",
+                model: "claude-sonnet-4-5",
+              },
+            ],
+          }),
+        );
+      }
+      if (url.endsWith("/agent/config/models")) {
+        return Promise.resolve(
+          ok({
+            ok: true,
+            provider: "anthropic",
+            count: 2,
+            latency_ms: 88,
+            models: [
+              { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+              { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(
+        ok({
+          provider: "anthropic",
+          base_url: "https://relay.example.com",
+          model: "claude-sonnet-4-5-20250929",
+          temperature: 0.2,
+          max_steps: 8,
+          timeout: 90,
+          enable_multimodal: true,
+          supports_vision: true,
+          supports_video: false,
+          has_api_key: true,
+          api_key_preview: "sk-a...1234",
+          api_key_source: "file",
+          is_local: false,
+          configured: true,
+          presets: [],
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSaved = vi.fn();
+    render(<LlmConfigModal open onClose={() => {}} onSaved={onSaved} />);
+
+    const antRadio = await screen.findByLabelText(/Anthropic 协议/);
+    fireEvent.click(antRadio);
+    fireEvent.change(screen.getByLabelText("Anthropic Base URL（可选）"), {
+      target: { value: "https://relay.example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Anthropic API Key"), {
+      target: { value: "sk-ant-relay-1234" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "获取模型列表" }));
+    await screen.findByText(/已获取 2 个可用模型（88ms）/);
+
+    fireEvent.click(screen.getByRole("button", { name: /claude-sonnet-4-5-20250929/ }));
+    expect(screen.getByLabelText(/模型名称/)).toHaveValue("claude-sonnet-4-5-20250929");
+
+    fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    const saveCall = fetchMock.mock.calls.find(
+      ([u, init]) => u.endsWith("/agent/config") && init?.method === "POST",
+    );
+    const sentBody = JSON.parse(String(saveCall?.[1]?.body || "{}"));
+    expect(sentBody.provider).toBe("anthropic");
+    expect(sentBody.model).toBe("claude-sonnet-4-5-20250929");
+  });
 });

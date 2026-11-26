@@ -72,6 +72,9 @@ class LLMConfigTests(unittest.TestCase):
                 "OPENAI_MODEL": "",
                 "GEMINI_API_KEY": "",
                 "GOOGLE_API_KEY": "",
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_BASE_URL": "",
+                "ANTHROPIC_MODEL": "",
             },
             clear=False,
         )
@@ -164,6 +167,117 @@ class LLMConfigTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             save_llm_config({"provider": "gemini", "base_url": "not-a-url", "model": "gemini-2.5-flash"})
+
+    def test_anthropic_provider_config_normalization_and_model_listing(self):
+        from types import SimpleNamespace
+        from langchain_anthropic import ChatAnthropic
+        from app.agent.llm_config import build_chat_model, fetch_available_models
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-env-12345"}, clear=False):
+            cfg = load_effective_config()
+            self.assertEqual(cfg["provider"], "anthropic")
+            self.assertEqual(cfg["model"], "claude-sonnet-4-5")
+            self.assertTrue(cfg["configured"])
+            self.assertTrue(cfg["supports_vision"])
+            self.assertFalse(cfg["supports_video"])
+
+        # 中转站误带 /v1/messages 或 /v1 时自动规范化为根地址
+        saved = save_llm_config(
+            {
+                "provider": "anthropic",
+                "base_url": "https://relay.example.com/v1/messages",
+                "api_key": "sk-ant-saved-998877",
+                "model": "claude-sonnet-4-5",
+            }
+        )
+        self.assertEqual(saved["provider"], "anthropic")
+        self.assertEqual(saved["base_url"], "https://relay.example.com")
+        self.assertEqual(saved["api_key_preview"], "sk-a...8877")
+
+        llm = build_chat_model()
+        self.assertIsInstance(llm, ChatAnthropic)
+        self.assertEqual(str(llm.anthropic_api_url).rstrip("/"), "https://relay.example.com")
+
+        # 1) Anthropic 模型列表拉取（验证归一化后的 /v1/models 路径与请求头）
+        seen_ant: dict = {}
+
+        def _fake_ant_get(url, headers=None, params=None, timeout=None):
+            seen_ant["url"] = url
+            seen_ant["headers"] = dict(headers or {})
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+                        {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5"},
+                    ]
+                },
+            )
+
+        with patch("app.agent.llm_config.requests.get", side_effect=_fake_ant_get):
+            ant_res = fetch_available_models(
+                {
+                    "provider": "anthropic",
+                    "base_url": "https://relay.example.com/v1",
+                    "api_key": "sk-ant-draft-123",
+                }
+            )
+        self.assertTrue(ant_res["ok"])
+        self.assertEqual(seen_ant["url"], "https://relay.example.com/v1/models")
+        self.assertEqual(seen_ant["headers"]["x-api-key"], "sk-ant-draft-123")
+        self.assertEqual(seen_ant["headers"]["anthropic-version"], "2023-06-01")
+        self.assertEqual([m["id"] for m in ant_res["models"]], ["claude-haiku-4-5", "claude-sonnet-4-5"])
+
+        # 2) OpenAI 兼容模型列表拉取
+        seen_oai: dict = {}
+
+        def _fake_oai_get(url, headers=None, timeout=None):
+            seen_oai["url"] = url
+            seen_oai["headers"] = dict(headers or {})
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "data": [
+                        {"id": "deepseek-reasoner", "owned_by": "deepseek"},
+                        {"id": "deepseek-chat", "owned_by": "deepseek"},
+                    ]
+                },
+            )
+
+        with patch("app.agent.llm_config.requests.get", side_effect=_fake_oai_get):
+            oai_res = fetch_available_models(
+                {
+                    "provider": "openai_compatible",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "sk-ds-123",
+                }
+            )
+        self.assertTrue(oai_res["ok"])
+        self.assertEqual(seen_oai["url"], "https://api.deepseek.com/v1/models")
+        self.assertEqual(seen_oai["headers"]["Authorization"], "Bearer sk-ds-123")
+        self.assertEqual([m["id"] for m in oai_res["models"]], ["deepseek-chat", "deepseek-reasoner"])
+
+        # 3) Gemini 原生模型列表拉取（自动剥离 models/ 前缀并过滤非 generateContent 模型）
+        fake_gem_client = SimpleNamespace(
+            models=SimpleNamespace(
+                list=lambda: [
+                    SimpleNamespace(
+                        name="models/gemini-2.5-flash",
+                        display_name="Gemini 2.5 Flash",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/text-embedding-004",
+                        display_name="Embedding",
+                        supported_actions=["embedContent"],
+                    ),
+                ]
+            )
+        )
+        with patch("app.agent.llm_config.build_gemini_client", return_value=fake_gem_client):
+            gem_res = fetch_available_models({"provider": "gemini", "api_key": "AIzaFake123"})
+        self.assertTrue(gem_res["ok"])
+        self.assertEqual([m["id"] for m in gem_res["models"]], ["gemini-2.5-flash"])
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -461,6 +575,51 @@ class LangGraphWorkflowTests(unittest.TestCase):
         self.assertNotIn("pending_interrupt", done["structured"])
         self.assertIn("神秘开发者", done["report_markdown"])
 
+    def test_llm_failure_unwraps_root_cause_and_preserves_baseline_checkpoint(self):
+        self.store.save_snapshot(
+            "github",
+            "faildev",
+            "profile",
+            {"platform": "github", "uid": "faildev", "nickname": "FailDev", "location": "Beijing"},
+        )
+
+        class _FailingLLM:
+            def bind_tools(self, tools):
+                return self
+
+            def invoke(self, messages):
+                root = OSError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+                outer = RuntimeError("Connection error.")
+                raise outer from root
+
+        runner = AgentRunManager(
+            store=self.store,
+            checkpoint_db_path=self.ckpt_path,
+            llm_factory=lambda: _FailingLLM(),
+        )
+        self.addCleanup(runner.close)
+
+        with patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:7897"}, clear=False), patch(
+            "app.services.platform_fetcher.get_adapter"
+        ) as mock_get_adapter:
+            adapter = mock_get_adapter.return_value
+            adapter.get_content_lists.return_value = []
+            adapter.get_events.return_value = []
+            adapter.get_follows.return_value = ([], False, 0)
+            adapter.get_followers.return_value = ([], False, 0)
+            adapter.get_history.return_value = []
+
+            session = runner.create_session(title="失败保留基线测试", uids={"github": "faildev"})
+            failed = self._wait_idle(runner, session["id"])
+
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("UNEXPECTED_EOF_WHILE_READING", failed["error"])
+        self.assertIn("127.0.0.1:7897", failed["error"])
+        # 基线阶段采集到的证据和轨迹被保留在失败档案中
+        self.assertGreaterEqual(len(failed["evidence"]), 1)
+        self.assertTrue(any(t.get("stage") == "collect_baseline" for t in failed["trace"]))
+        self.assertTrue(any(t.get("stage") == "error" for t in failed["trace"]))
+
 
 class AgentRestRoutesTests(unittest.TestCase):
     def setUp(self):
@@ -515,6 +674,24 @@ class AgentRestRoutesTests(unittest.TestCase):
         )
         self.assertEqual(res_save.status_code, 200)
         self.assertTrue(res_save.json["data"]["configured"])
+
+        with patch(
+            "app.routes.agent_routes.fetch_available_models",
+            return_value={
+                "ok": True,
+                "provider": "anthropic",
+                "count": 1,
+                "models": [{"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5"}],
+                "latency_ms": 25,
+            },
+        ):
+            res_models = self.client.post(
+                "/api/agent/config/models",
+                json={"provider": "anthropic", "api_key": "sk-ant-test"},
+            )
+        self.assertEqual(res_models.status_code, 200)
+        self.assertTrue(res_models.json["data"]["ok"])
+        self.assertEqual(res_models.json["data"]["models"][0]["id"], "claude-sonnet-4-5")
 
         # 创建一个不自动启动的档案测试列表/详情/事件/删除
         res_create = self.client.post(
@@ -803,6 +980,31 @@ class MultimodalPipelineTests(unittest.TestCase):
             img_res = analyze_images([("小红书配图", cached_img)], "分析风格")
             self.assertEqual(img_res["provider"], "gemini")
             self.assertIn("机械键盘", img_res["analysis"])
+
+        # Anthropic 视觉图片分析走 Claude 原生 base64 image block
+        captured_ant_msgs: list = []
+
+        class _FakeAnthropicVisionLLM:
+            def invoke(self, msgs):
+                captured_ant_msgs.extend(msgs)
+                return AIMessage(content="Claude 视觉识别：极简机械键盘桌搭。")
+
+        with patch("app.agent.multimodal.build_chat_model", return_value=_FakeAnthropicVisionLLM()):
+            ant_img_res = analyze_images(
+                [("小红书配图", cached_img)],
+                "分析风格",
+                overrides={"provider": "anthropic", "api_key": "sk-ant-test", "model": "claude-sonnet-4-5"},
+            )
+        self.assertEqual(ant_img_res["provider"], "anthropic")
+        self.assertIn("Claude 视觉识别", ant_img_res["analysis"])
+        self.assertTrue(
+            any(
+                isinstance(b, dict) and b.get("type") == "image" and b.get("source", {}).get("type") == "base64"
+                for b in captured_ant_msgs[0].content
+            )
+        )
+
+        with patch("app.agent.multimodal.build_gemini_client", return_value=fake_client):
 
             # 小视频走内联 Part.from_bytes
             vid_inline = analyze_video(cached_vid, "分析视频")

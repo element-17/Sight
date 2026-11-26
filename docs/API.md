@@ -75,13 +75,14 @@ REST 层是唯一把异常转 JSON 的边界，失败返回 `{"code": -1, "messa
 
 ## AI 人物侧写（LangGraph Agent · 原生多模态）
 
-基于 LangGraph `StateGraph` + SQLite Checkpointer（`data/agent_checkpoints.db`）的跨平台智能体接口，模型配置存储于 `credentials/llm.json`（支持 **Google Gemini 原生多模态** 与 **OpenAI 兼容协议 / 本地 Ollama**，GET 返回脱敏 Key，同时支持环境变量 `GEMINI_API_KEY` / `SIGHT_LLM_*` 兜底）。
+基于 LangGraph `StateGraph` + SQLite Checkpointer（`data/agent_checkpoints.db`）的跨平台智能体接口，模型配置存储于 `credentials/llm.json`（支持 **Google Gemini 原生多模态**、**Anthropic Messages 协议** 与 **OpenAI 兼容协议 / 本地 Ollama**，GET 返回脱敏 Key，同时支持环境变量 `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `SIGHT_LLM_*` 兜底）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/agent/config` | 获取脱敏后的 LLM 配置（含 `provider / enable_multimodal / supports_vision / supports_video`）与提供商预设 |
-| POST | `/agent/config` | 保存 LLM 配置（`provider / base_url / api_key / model / enable_multimodal / temperature / max_steps`），`provider="gemini"` 时 `base_url` 可留空直连官方接口，留空 `api_key` 保留原密钥 |
+| POST | `/agent/config` | 保存 LLM 配置（`provider / base_url / api_key / model / enable_multimodal / temperature / max_steps`），`provider` 可选 `gemini / anthropic / openai_compatible`，留空 `api_key` 保留原密钥 |
 | POST | `/agent/config/test` | 探测模型连通性（支持传入未保存草稿字段），返回 `ok / provider / supports_video / latency_ms / reply_preview / error` |
+| POST | `/agent/config/models` | 按当前草稿或已保存配置动态拉取可用模型列表（OpenAI `/models`、Anthropic `/v1/models`、Gemini `models.list`），返回 `ok / count / models / latency_ms / error` |
 | GET | `/agent/sessions` | 列出已保存的人物侧写档案元信息 |
 | POST | `/agent/sessions` | 创建并启动人物侧写，body 支持 `uids`（直通基线采集与多模态视觉基线）或 `target_query`（跨平台搜人 + `interrupt()` 人工确认），可选 `graph_id / focus / auto_confirm / refresh_data / auto_start` |
 | GET | `/agent/sessions/<id>` | 获取单条档案完整数据（Markdown 报告、结构化元信息、24h 作息与社交拓扑统计、图文/视频证据账本、盲区、执行轨迹、追问记录） |

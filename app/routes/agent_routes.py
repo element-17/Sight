@@ -4,6 +4,7 @@ import json
 from flask import Response, request, send_file
 
 from app.agent.llm_config import (
+    fetch_available_models,
     get_public_config,
     save_llm_config,
     test_llm_connection,
@@ -44,6 +45,17 @@ def agent_config_test():
     overrides = body if isinstance(body, dict) and body else None
     try:
         return _result(test_llm_connection(overrides))
+    except Exception as e:
+        return _error(str(e))
+
+
+@bp.route("/agent/config/models", methods=["POST"])
+def agent_config_models():
+    """按当前草稿或已保存配置动态拉取可用模型列表（OpenAI 兼容 / Anthropic / Gemini）"""
+    body = request.get_json(silent=True) or {}
+    overrides = body if isinstance(body, dict) and body else None
+    try:
+        return _result(fetch_available_models(overrides))
     except Exception as e:
         return _error(str(e))
 

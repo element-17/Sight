@@ -23,7 +23,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from app.agent.graph import compile_profile_graph
-from app.agent.llm_config import DEFAULT_MAX_STEPS, load_effective_config
+from app.agent.llm_config import DEFAULT_MAX_STEPS, format_llm_error, load_effective_config
 from app.agent.state import extract_text_content
 from app.credentials import _PLATFORM_NAMES
 from app.data.store import DataStore
@@ -448,13 +448,9 @@ class AgentRunManager:
             try:
                 self._execute_stream(session_id, ch, graph_input, kind=kind)
             except Exception as e:
-                err_msg = str(e)
+                err_msg = format_llm_error(e)
                 self._log(f"会话 {session_id} 失败: {err_msg}", level="error")
-                updated = self.store.update_agent_profile(
-                    session_id,
-                    status="failed",
-                    error=err_msg,
-                )
+                updated = self._persist_failure_state(session_id, err_msg)
                 ch.publish("error", message=err_msg, session=updated)
             finally:
                 ch.running = False
@@ -462,6 +458,58 @@ class AgentRunManager:
         t = threading.Thread(target=_worker, daemon=True, name=f"agent-{session_id[:8]}")
         ch.thread = t
         t.start()
+
+    def _persist_failure_state(self, session_id: str, err_msg: str) -> Optional[dict[str, Any]]:
+        """
+        工作流中途失败时，尽量从 LangGraph Checkpoint 回捞已采集的基线统计、证据账本、盲区与轨迹，
+        避免前面已完成的平台采集数据丢失，并附加一条明确的失败轨迹。
+        """
+        existing = self.store.get_agent_profile(session_id) or {}
+        structured = dict(existing.get("structured") or {})
+        evidence = existing.get("evidence") or {}
+        gaps = existing.get("gaps") or []
+        trace = list(existing.get("trace") or [])
+
+        try:
+            checkpointer = self._get_checkpointer()
+            compiled = compile_profile_graph(
+                self.store,
+                checkpointer=checkpointer,
+                llm_factory=self._llm_factory,
+            )
+            snap = compiled.get_state({"configurable": {"thread_id": session_id}})
+            values = dict(getattr(snap, "values", {}) or {})
+            if values.get("baseline_stats"):
+                structured["baseline_stats"] = values["baseline_stats"]
+            if values.get("candidate_accounts"):
+                structured["candidate_accounts"] = values["candidate_accounts"]
+            if values.get("evidence"):
+                evidence = values["evidence"]
+            if values.get("gaps"):
+                gaps = values["gaps"]
+            if values.get("trace"):
+                trace = list(values["trace"])
+        except Exception:
+            pass
+
+        trace.append(
+            {
+                "ts": _now_ts(),
+                "stage": "error",
+                "title": "推理过程异常中断",
+                "detail": err_msg,
+                "status": "error",
+            }
+        )
+        return self.store.update_agent_profile(
+            session_id,
+            status="failed",
+            error=err_msg,
+            structured=structured,
+            evidence=evidence,
+            gaps=gaps,
+            trace=trace[-200:],
+        )
 
     def _execute_stream(
         self,

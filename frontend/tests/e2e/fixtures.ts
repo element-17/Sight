@@ -100,6 +100,13 @@ export async function installMockApi(page: Page) {
         model: "gemini-2.5-flash",
       },
       {
+        id: "anthropic_sonnet",
+        name: "Claude Sonnet (Anthropic 协议)",
+        provider: "anthropic",
+        base_url: "https://api.anthropic.com",
+        model: "claude-sonnet-4-5",
+      },
+      {
         id: "deepseek",
         name: "DeepSeek",
         provider: "openai_compatible",
@@ -499,7 +506,12 @@ export async function installMockApi(page: Page) {
       return;
     } else if (path === "/agent/config") {
       if (method === "POST") {
-        const nextProvider = body.provider === "gemini" ? "gemini" : "openai_compatible";
+        const nextProvider =
+          body.provider === "gemini"
+            ? "gemini"
+            : body.provider === "anthropic"
+              ? "anthropic"
+              : "openai_compatible";
         const nextMm = body.enable_multimodal ?? llmConfig.enable_multimodal;
         llmConfig = {
           ...llmConfig,
@@ -513,6 +525,30 @@ export async function installMockApi(page: Page) {
         };
       }
       data = llmConfig;
+    } else if (path === "/agent/config/models") {
+      const reqProvider = body?.provider || llmConfig.provider;
+      const models =
+        reqProvider === "gemini"
+          ? [
+              { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+              { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+            ]
+          : reqProvider === "anthropic"
+            ? [
+                { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+                { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+              ]
+            : [
+                { id: "deepseek-chat", owned_by: "deepseek" },
+                { id: "deepseek-reasoner", owned_by: "deepseek" },
+              ];
+      data = {
+        ok: true,
+        provider: reqProvider,
+        count: models.length,
+        models,
+        latency_ms: 35,
+      };
     } else if (path === "/agent/config/test") {
       const testProvider = body?.provider || llmConfig.provider;
       const testMm = body?.enable_multimodal ?? llmConfig.enable_multimodal;

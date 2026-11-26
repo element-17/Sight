@@ -33,7 +33,7 @@
 - **时序快照 Diff 与行为演化时间线**：持久化各时间节点的公开状态快照，通过逐对集合 Diff 自动推断跨时段变更窗口，并以 `dedup_key` 幂等落库，支持统一时间线检索与导出。
 - **交互式社交关系图谱**：后端按平台隔离异步展开队列（内置速率限制、连续失败 5 次自动熔断与 `skip` 断点续拉），前端基于 **ECharts 6** 增量轮询并动态渲染实体关联网络。
 - **实时运行终端（SSE）**：通过 `log_hub` 环形缓冲实时镜像后端任务与适配器运行状态，借助 Server-Sent Events 推送至前端可视化终端。
-- **AI Agent 原生多模态人物侧写（LangGraph + Gemini）**：基于 LangGraph `StateGraph` 与独立 SQLite Checkpointer，同时支持 **Google Gemini 原生多模态**（`google-genai` + `langchain-google-genai`，原生看图与看短视频/听语音）及任意 **OpenAI 兼容接口**；内置本机防盗链媒体缓存（`media_fetcher`）、跨平台头像/背景视觉基线、`inspect_images` 图集侦查与 `inspect_video`（抖音/小红书/B站/微博）短视频分析工具；支持「面板账号直通」与「关键词搜人 → 原生 `interrupt()` 人工确认断点」双入口，输出带 `[E#]` 可点击图文证据溯源与零幻觉校验的深度侧写报告，并支持同一档案的多轮追问。
+- **AI Agent 原生多模态人物侧写（LangGraph + Gemini / Anthropic / OpenAI）**：基于 LangGraph `StateGraph` 与独立 SQLite Checkpointer，同时支持 **Google Gemini 原生多模态**（`google-genai` + `langchain-google-genai`，原生看图与看短视频/听语音）、**Anthropic Messages 协议**（`langchain-anthropic`，支持官方与中转站 `/v1/messages` 及 Claude 原生看图）及任意 **OpenAI 兼容接口**，支持一键拉取各协议可用模型列表；内置本机防盗链媒体缓存（`media_fetcher`）、跨平台头像/背景视觉基线、`inspect_images` 图集侦查与 `inspect_video`（抖音/小红书/B站/微博）短视频分析工具；支持「面板账号直通」与「关键词搜人 → 原生 `interrupt()` 人工确认断点」双入口，输出带 `[E#]` 可点击图文证据溯源与零幻觉校验的深度侧写报告，并支持同一档案的多轮追问。
 
 ---
 

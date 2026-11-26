@@ -14,10 +14,16 @@ test("AI profiling workspace: LLM config, bound-account profiling, evidence jump
   await page.goto("/#/agent");
   await expect(page.getByText("AI 人物侧写工作台（LangGraph）")).toBeVisible();
 
-  // 1. 打开模型配置弹窗，切换 Gemini 原生多模态预设并测试/保存
+  // 1. 打开模型配置弹窗，切换 Anthropic 协议拉取模型列表，再切换 Gemini 原生多模态预设并测试/保存
   await page.getByRole("button", { name: /模型：deepseek-chat/ }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await dialog.getByLabel(/Anthropic 协议/).check();
+  await dialog.getByRole("button", { name: "获取模型列表", exact: true }).click();
+  await expect(dialog.getByText(/已获取 2 个可用模型（35ms）/)).toBeVisible();
+  await dialog.getByRole("button", { name: /claude-haiku-4-5/ }).click();
+  await expect(dialog.getByLabel(/模型名称/)).toHaveValue("claude-haiku-4-5");
+
   await dialog
     .getByRole("button", { name: "Gemini 2.5 Flash (原生多模态·推荐)", exact: true })
     .click();

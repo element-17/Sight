@@ -10,11 +10,12 @@ ecdsa>=0.18
 # 抖音 ref_dy_apis/douyin_api.py（页面解析）与 ref_utils（challenge_sign/dtrait/fingerprint）所需
 beautifulsoup4>=4.12
 cryptography>=42.0
-# AI Agent（LangGraph 状态图、SQLite Checkpointer、OpenAI 兼容 & Gemini 原生多模态）
+# AI Agent（LangGraph 状态图、SQLite Checkpointer、OpenAI 兼容 / Anthropic / Gemini 原生多模态）
 langgraph>=0.4
 langgraph-checkpoint-sqlite>=2.0
 langchain-core>=0.3
 langchain-openai>=0.3
+langchain-anthropic>=0.3
 google-genai>=1.0
 langchain-google-genai>=2.0
 # 可选：QQ音乐扫码登录（app/services/qqmusic_qr_login.py）依赖 Playwright，

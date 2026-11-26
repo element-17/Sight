@@ -34,6 +34,8 @@ for pkg_name in (
     "langgraph-checkpoint-sqlite",
     "langchain-core",
     "langchain-openai",
+    "langchain-anthropic",
+    "anthropic",
     "langchain-google-genai",
     "google-genai",
 ):
@@ -72,6 +74,8 @@ hiddenimports = sorted(
         + collect_submodules("langgraph.checkpoint.sqlite")
         + collect_submodules("langchain_core")
         + collect_submodules("langchain_openai")
+        + collect_submodules("langchain_anthropic")
+        + collect_submodules("anthropic")
         + collect_submodules("langchain_google_genai")
         + collect_submodules("google.genai")
         + collect_submodules("tiktoken_ext")

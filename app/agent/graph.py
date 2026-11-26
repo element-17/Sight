@@ -34,7 +34,7 @@ from app.agent.analyzers import (
     compute_activity_stats,
     extract_citation_ids,
 )
-from app.agent.llm_config import DEFAULT_MAX_STEPS, build_chat_model, load_effective_config
+from app.agent.llm_config import DEFAULT_MAX_STEPS, build_chat_model, format_llm_error, load_effective_config
 from app.agent.multimodal import VISUAL_BASELINE_PROMPT, analyze_images
 from app.agent.prompts import (
     FOLLOWUP_SYSTEM_PROMPT,
@@ -555,12 +555,13 @@ def compile_profile_graph(
                         baseline_traces.append(v_trace)
                         _emit_custom({"type": "trace", "item": v_trace})
                     except Exception as ve:
+                        verr = format_llm_error(ve)
                         new_gaps.append(
                             {
                                 "platform": "multi",
                                 "category": "visual_baseline",
-                                "reason": f"视觉基线未完成（已自动降级为纯文本侧写）: {ve}",
-                                "error_kind": classify_error(str(ve)),
+                                "reason": f"视觉基线未完成（已自动降级为纯文本侧写）: {verr}",
+                                "error_kind": classify_error(verr),
                             }
                         )
 

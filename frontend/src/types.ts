@@ -394,7 +394,21 @@ export interface LogResponse {
   entries: LogEntry[];
   last_seq?: number;
 }
-export type LlmProvider = "openai_compatible" | "gemini";
+export type LlmProvider = "openai_compatible" | "gemini" | "anthropic";
+export interface LlmModelOption {
+  id: string;
+  name?: string;
+  owned_by?: string;
+}
+export interface LlmModelsResult {
+  ok: boolean;
+  provider?: LlmProvider;
+  base_url?: string;
+  count: number;
+  models: LlmModelOption[];
+  latency_ms: number;
+  error?: string;
+}
 export interface LlmPreset {
   id: string;
   name: string;
