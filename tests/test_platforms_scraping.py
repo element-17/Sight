@@ -528,7 +528,6 @@ class DouyinScrapingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "无法获取该用户的关注/粉丝列表"):
                 self.adapter.get_followers("MS4wLjABAAAA_test_sec")
 
-
 class QQMusicScrapingTests(unittest.TestCase):
     """QQ音乐抓取与 SSR 解码测试"""
 
@@ -647,46 +646,57 @@ class WeiboScrapingTests(unittest.TestCase):
         </div>
         </body></html>
         """
-        mobile_profile = {
-            "userInfo": {
-                "id": 1669879400,
-                "screen_name": "迪丽热巴",
-                "profile_image_url": "https://tvax1.sinaimg.cn/a.jpg",
-                "cover_image_phone": "",
-                "description": "演员",
-                "gender": "f",
-                "location": "上海",
-                "verified": True,
-                "verified_reason": "知名演员",
-                "statuses_count": 1200,
+        pc_profile = {
+            "ok": 1,
+            "data": {
+                "user": {
+                    "id": 1669879400,
+                    "idstr": "1669879400",
+                    "screen_name": "迪丽热巴",
+                    "profile_image_url": "https://tvax1.sinaimg.cn/a50.jpg",
+                    "avatar_large": "https://tvax1.sinaimg.cn/a180.jpg",
+                    "avatar_hd": "https://tvax1.sinaimg.cn/a1024.jpg",
+                    "cover_image_phone": "https://ww1.sinaimg.cn/bg.jpg",
+                    "description": "演员",
+                    "gender": "f",
+                    "location": "上海",
+                    "verified": True,
+                    "verified_reason": "知名演员",
+                    "verified_type": 0,
+                    "friends_count": 300,
+                    "followers_count": 80000000,
+                    "statuses_count": 1200,
+                }
             },
-            "tabs": {"follow": {"count": 300}, "fans": {"count": 80000000}},
-            "tabsInfo": {"containerid": "1076031669879400"},
         }
-        mobile_posts = {
-            "cards": [
-                {
-                    "card_type": 9,
-                    "mblog": {
-                        "id": "4900000000000001",
+        pc_posts = {
+            "ok": 1,
+            "data": {
+                "since_id": "",
+                "list": [
+                    {
+                        "id": 4900000000000001,
+                        "idstr": "4900000000000001",
+                        "mblogid": "M9abc1234",
                         "created_at": "Tue May 19 12:00:00 +0800 2026",
                         "text": "<p>今天天气真好</p>",
-                        "user": {"screen_name": "迪丽热巴"},
+                        "text_raw": "今天天气真好",
+                        "user": {"id": 1669879400, "screen_name": "迪丽热巴"},
                         "reposts_count": 100,
                         "comments_count": 200,
                         "attitudes_count": 500,
-                        "pics": [],
+                        "pic_ids": ["pic1"],
+                        "pic_infos": {
+                            "pic1": {
+                                "original": {"url": "https://wx1.sinaimg.cn/orj1080/pic1.jpg"},
+                                "large": {"url": "https://wx1.sinaimg.cn/orj960/pic1.jpg"},
+                            }
+                        },
                         "source": "iPhone客户端",
-                    },
-                }
-            ]
+                    }
+                ],
+            },
         }
-
-        def fake_mobile_get(params):
-            if "containerid" in params:
-                return mobile_posts if params.get("page", 1) == 1 else {"cards": []}
-            return mobile_profile
-
         pc_friends = {
             "ok": 1,
             "total_number": 2,
@@ -712,9 +722,17 @@ class WeiboScrapingTests(unittest.TestCase):
             ],
         }
 
+        def fake_pc_ajax_get(path, params=None):
+            if path == "/ajax/profile/info":
+                return pc_profile
+            if path == "/ajax/statuses/mymblog":
+                return pc_posts
+            if path == "/ajax/friendships/friends":
+                return pc_friends
+            raise AssertionError(f"Unexpected PC ajax path: {path}")
+
         with patch.object(self.adapter, "_web_get", return_value=search_html), \
-             patch.object(self.adapter, "_mobile_get", side_effect=fake_mobile_get), \
-             patch.object(self.adapter, "_pc_ajax_get", return_value=pc_friends):
+             patch.object(self.adapter, "_pc_ajax_get", side_effect=fake_pc_ajax_get):
             users = self.adapter.search_user("迪丽热巴")
             self.assertEqual(len(users), 1)
             self.assertEqual(users[0]["uid"], "1669879400")
@@ -722,11 +740,16 @@ class WeiboScrapingTests(unittest.TestCase):
 
             profile = self.adapter.get_profile("1669879400")
             self.assertEqual(profile.nickname, "迪丽热巴")
+            self.assertEqual(profile.avatar_url, "https://tvax1.sinaimg.cn/a180.jpg")
+            self.assertEqual(profile.extra["follow_count"], 300)
+            self.assertEqual(profile.extra["fans_count"], 80000000)
             self.assertTrue(profile.is_vip)
 
             posts = self.adapter.get_content_lists("1669879400")
             self.assertEqual(len(posts), 1)
             self.assertEqual(posts[0].title, "今天天气真好")
+            self.assertEqual(posts[0].cover_url, "https://wx1.sinaimg.cn/orj1080/pic1.jpg")
+            self.assertEqual(posts[0].url, "https://weibo.com/1669879400/M9abc1234")
 
             events = self.adapter.get_events("1669879400")
             self.assertEqual(len(events), 1)
@@ -737,6 +760,38 @@ class WeiboScrapingTests(unittest.TestCase):
             self.assertEqual(follows[0]["uid"], "2002")
             self.assertFalse(more)
             self.assertEqual(total, 2)
+
+    def test_nonexistent_profile_returns_none(self):
+        with patch.object(
+            self.adapter,
+            "_pc_ajax_get",
+            return_value={"user": {}, "message": "用户不存在", "abnormal": True, "ok": 1},
+        ):
+            self.assertIsNone(self.adapter.get_profile("9999999999999999"))
+
+    def test_pc_ajax_redirect_to_login_raises_auth_expired(self):
+        mock_resp = Mock(
+            status_code=302,
+            headers={"Location": "https://weibo.com/login.php?url=https%3A%2F%2Fweibo.com%2Fajax%2Fprofile%2Finfo"},
+        )
+        with patch.object(self.adapter.session, "get", return_value=mock_resp):
+            with self.assertRaisesRegex(RuntimeError, "登录态已失效"):
+                self.adapter.get_profile("1669879400")
+
+    def test_check_alive_and_login_user_from_window_config(self):
+        home_html = (
+            '<html><script>window.$CONFIG = {"serverTime":1,"user":'
+            '{"id":6478081473,"idstr":"6478081473","screen_name":"测试号",'
+            '"avatar_large":"https://tvax2.sinaimg.cn/me.jpg"}};</script></html>'
+        )
+        mock_resp = Mock(status_code=200, text=home_html)
+        with patch.object(self.adapter, "_load_cookies", return_value={"SUB": "valid"}), \
+             patch.object(self.adapter.session, "get", return_value=mock_resp):
+            self.assertTrue(self.adapter.check_alive())
+            user = self.adapter.get_login_user()
+            self.assertEqual(user["uid"], "6478081473")
+            self.assertEqual(user["nickname"], "测试号")
+            self.assertEqual(user["avatarUrl"], "https://tvax2.sinaimg.cn/me.jpg")
 
     def test_expired_cookie_on_search_raises_runtime_error(self):
         with patch.object(self.adapter, "_web_get", return_value="<html>passport.weibo.com</html>"):

@@ -1,22 +1,18 @@
 """
 微博平台适配器
 
-基于 m.weibo.cn 移动端 API 的数据采集实现。
+基于 weibo.com PC 端 Ajax API 与 s.weibo.com 搜索页的数据采集实现。
 
 API 说明:
-  - m.weibo.cn/api/container/getIndex  移动端容器 API（主要数据源）
-  - s.weibo.com/user                   微博网页搜索
-  - weibo.com/u/{uid}                   PC 端用户主页（SSR 兜底）
+  - weibo.com/                              登录态校验与当前登录用户提取（window.$CONFIG）
+  - weibo.com/ajax/profile/info             用户资料
+  - weibo.com/ajax/statuses/mymblog         用户微博列表 / 动态
+  - weibo.com/ajax/friendships/friends      关注 / 粉丝列表
+  - s.weibo.com/user                        微博网页搜索
 
 认证方式:
-  - 需要 Cookie（SUB, SUBP 等字段）
-  - 部分公开数据无需登录即可访问
-  - 关注/粉丝列表需要登录态
-
-已知限制:
-  - 搜索功能对未登录用户限制严格
-  - 关注/粉丝列表需要有效登录态
-  - 移动端 API 有频率限制（约 100 次/分钟）
+  - 需要 PC 网页版 weibo.com 的有效登录 Cookie（包含 SUB、SUBP、WBPSESS 等字段）
+  - 统一使用 weibo.com / s.weibo.com 同域接口，避免 m.weibo.cn wapsso 跨域校验拦截
 """
 import json
 import re
@@ -41,15 +37,21 @@ class WeiboAdapter(BasePlatformAdapter):
     platform_name = "微博"
 
     # API 基础地址
-    MOBILE_API = "https://m.weibo.cn/api/container/getIndex"
     WEB_BASE = "https://weibo.com"
     SEARCH_BASE = "https://s.weibo.com"
+
+    # 登录态探测缓存有效期（秒）：避免 check_alive + get_login_user 连续调用重复请求首页
+    _LOGIN_CACHE_TTL = 10.0
+
+    _CONFIG_START_RE = re.compile(r"window\.\$CONFIG\s*=\s*")
+    _AUTH_REDIRECT_HINTS = ("passport.weibo.com", "login.php", "signin", "visitor")
 
     def __init__(self, credentials: dict = None, account_id: str = None):
         super().__init__(credentials, account_id)
         self._session: requests.Session | None = None
         self._last_request_at = 0.0
-        self._container_cache: dict[str, str] = {}
+        self._login_user_cache: Optional[dict] = None
+        self._login_user_cache_at: float = 0.0
         self.last_api_error: str | None = None  # 最近一次业务错误，供上层透传真实原因
 
     @property
@@ -59,24 +61,33 @@ class WeiboAdapter(BasePlatformAdapter):
         return self._session
 
     def _build_session(self) -> requests.Session:
-        """构建请求会话（带 Cookie 和 UA）"""
+        """构建请求会话（带 weibo.com Cookie 和请求头）"""
         s = requests.Session()
         cookies = self._load_cookies()
         for key, value in cookies.items():
             s.cookies.set(key, value)
-        s.headers.update({
+        headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://m.weibo.cn/",
-            "Origin": "https://m.weibo.cn",
+            "Referer": f"{self.WEB_BASE}/",
+            "Origin": self.WEB_BASE,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "X-Requested-With": "XMLHttpRequest",
-        })
+        }
+        if cookies.get("XSRF-TOKEN"):
+            headers["X-XSRF-TOKEN"] = cookies["XSRF-TOKEN"]
+        s.headers.update(headers)
         return s
+
+    def clear_cache(self) -> dict:
+        had_login = 1 if self._login_user_cache_at > 0 else 0
+        self._login_user_cache = None
+        self._login_user_cache_at = 0.0
+        return {"login_user": had_login} if had_login else {}
 
     def _rate_limit(self):
         """请求间隔控制"""
@@ -90,52 +101,73 @@ class WeiboAdapter(BasePlatformAdapter):
             time.sleep(min_interval - elapsed)
         self._last_request_at = time.time()
 
-    def _mobile_get(self, params: dict) -> dict:
-        """调用移动端 API；登录失效/接口错误/重试耗尽时抛 RuntimeError，不返回空值伪装成功"""
+    def _pc_ajax_get(self, path: str, params: dict = None) -> dict:
+        """
+        weibo.com PC 端 ajax 接口（需有效 weibo.com 登录 Cookie）。
+        使用 allow_redirects=False 快速识别 302 跳转 passport/login 登录页，
+        登录失效、风控或接口异常一律抛 RuntimeError，不返回空值伪装成功。
+        """
+        headers = {"Referer": f"{self.WEB_BASE}/", "X-Requested-With": "XMLHttpRequest"}
         last_error = "未知错误"
         max_attempts = min(MAX_RETRIES, 2)
         for attempt in range(max_attempts):
             try:
                 self._rate_limit()
                 resp = self.session.get(
-                    self.MOBILE_API,
-                    params=params,
+                    f"{self.WEB_BASE}{path}",
+                    params=params or {},
+                    headers=headers,
                     timeout=(5, REQUEST_TIMEOUT),
+                    allow_redirects=False,
                 )
-
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("ok") == 1:
-                        self.last_api_error = None
-                        return data.get("data", {})
-                    # ok=-100 且带 passport 链接 = 被重定向到登录页，登录态失效
-                    if data.get("ok") == -100 or data.get("url"):
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    loc = str(resp.headers.get("Location", "") or "")
+                    if any(h in loc for h in self._AUTH_REDIRECT_HINTS) or not loc:
                         raise RuntimeError("[微博] 登录态已失效，请更新 Cookie")
-                    # ok=0 通常表示登录态失效或参数错误
-                    msg = data.get("msg", "")
-                    raise RuntimeError(f"[微博] 接口返回异常: {msg or 'ok=%s' % data.get('ok')}")
-                if resp.status_code in (401, 403, 418):
-                    raise RuntimeError(f"[微博] 请求被风控拦截或登录态已失效 (HTTP {resp.status_code})，请更新 Cookie")
-                last_error = f"HTTP {resp.status_code}"
-                print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), params={params}")
+                    last_error = f"HTTP {resp.status_code} ({loc})"
+                    print(f"[微博] 非预期重定向 HTTP {resp.status_code} -> {loc}, path={path}")
+                elif resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        # 非 JSON（多为被重定向到 passport/login 的 HTML）
+                        raise RuntimeError("[微博] 登录态已失效，请更新 Cookie（PC 接口返回非 JSON）")
+                    if isinstance(data, dict) and data.get("ok") == 1:
+                        self.last_api_error = None
+                        return data
+                    if isinstance(data, dict) and (data.get("ok") == -100 or data.get("url")):
+                        raise RuntimeError("[微博] 登录态已失效，请更新 Cookie (ok=-100)")
+                    msg = ""
+                    if isinstance(data, dict):
+                        msg = str(data.get("message") or data.get("msg") or "")
+                    ok_val = data.get("ok") if isinstance(data, dict) else None
+                    self.last_api_error = msg or f"接口返回异常 (ok={ok_val})"
+                    print(f"[微博] PC 接口返回异常: {self.last_api_error}, path={path}")
+                    raise RuntimeError(f"[微博] {self.last_api_error}")
+                elif resp.status_code in (401, 403, 418, 432):
+                    raise RuntimeError(
+                        f"[微博] 登录态已失效或触发风控 (HTTP {resp.status_code})，请更新 Cookie"
+                    )
+                else:
+                    last_error = f"HTTP {resp.status_code}"
+                    print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), path={path}")
+
                 if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt * 0.5)
                     self._last_request_at = time.time()
-
             except RuntimeError:
                 raise
-            except (requests.RequestException, ValueError, json.JSONDecodeError) as e:
+            except (requests.RequestException, ValueError) as e:
                 last_error = str(e)
                 print(f"[微博] 请求失败 (attempt {attempt+1}): {e}")
                 if attempt < max_attempts - 1:
                     time.sleep(1.5 + attempt)
                     self._last_request_at = time.time()
-
         self.last_api_error = last_error
         raise RuntimeError(f"[微博] 请求失败: {last_error}")
 
     def _web_get(self, url: str, params: dict = None, headers: dict = None) -> Optional[str]:
-        """获取网页内容（SSR 兜底）"""
+        """获取网页内容（s.weibo.com 搜索页等）"""
         max_attempts = min(MAX_RETRIES, 2)
         for attempt in range(max_attempts):
             try:
@@ -148,7 +180,7 @@ class WeiboAdapter(BasePlatformAdapter):
                 )
                 if resp.status_code == 200:
                     return resp.text
-                if resp.status_code in (401, 403, 418):
+                if resp.status_code in (401, 403, 418, 432):
                     raise RuntimeError(f"[微博] 网页访问受限或登录态已失效 (HTTP {resp.status_code})，请更新 Cookie")
                 print(f"[微博] 网页 HTTP {resp.status_code} (attempt {attempt+1}), url={url}")
                 if attempt < max_attempts - 1:
@@ -165,49 +197,99 @@ class WeiboAdapter(BasePlatformAdapter):
 
     # ==================== 状态检查 ====================
 
-    def check_alive(self) -> bool:
-        """检查 Cookie 是否有效（通过访问移动端首页）"""
+    @classmethod
+    def _parse_config_user(cls, html: str) -> Optional[dict]:
+        """从 weibo.com 首页 window.$CONFIG JSON 中解析当前登录用户信息"""
+        if not html:
+            return None
+        match = cls._CONFIG_START_RE.search(html)
+        if not match:
+            return None
+        try:
+            cfg, _ = json.JSONDecoder().raw_decode(html, match.end())
+        except (ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(cfg, dict):
+            return None
+        user = cfg.get("user")
+        if not isinstance(user, dict):
+            return None
+        uid = str(user.get("idstr") or user.get("id") or "").strip()
+        if not uid:
+            return None
+        return {
+            "uid": uid,
+            "nickname": str(user.get("screen_name") or "").strip(),
+            "avatarUrl": str(
+                user.get("avatar_large") or user.get("profile_image_url") or ""
+            ).strip(),
+        }
+
+    def _fetch_login_user(self, force: bool = False) -> Optional[dict]:
+        """通过访问 weibo.com 首页验证 PC Cookie 并解析登录用户（未登录/过期会 302 到 passport/login）"""
         cookies = self._load_cookies()
         if not cookies:
-            return False
+            self._login_user_cache = None
+            self._login_user_cache_at = 0.0
+            return None
+
+        now = time.time()
+        if not force and self._login_user_cache_at > 0 and (now - self._login_user_cache_at) < self._LOGIN_CACHE_TTL:
+            return self._login_user_cache
+
         try:
-            # 移动端配置接口可达且未报登录失效，才视为凭证有效
-            data = self._mobile_get({"type": "uid", "value": "0"})
-            return bool(data)
+            self._rate_limit()
+            resp = self.session.get(
+                f"{self.WEB_BASE}/",
+                headers={
+                    "Referer": f"{self.WEB_BASE}/",
+                    "X-Requested-With": None,
+                    "Accept": "text/html,application/xhtml+xml,*/*",
+                },
+                timeout=(5, REQUEST_TIMEOUT),
+                allow_redirects=False,
+            )
+            user = self._parse_config_user(resp.text) if resp.status_code == 200 else None
+        except requests.RequestException:
+            user = None
+
+        self._login_user_cache = user
+        self._login_user_cache_at = time.time()
+        return user
+
+    def check_alive(self) -> bool:
+        """检查 PC Cookie 是否有效"""
+        try:
+            return bool(self._fetch_login_user(force=True))
         except Exception:
             return False
 
     def get_login_user(self) -> Optional[dict]:
-        """获取当前登录用户"""
-        cookies = self._load_cookies()
-        # 从 Cookie 中提取 uid
-        # 微博 Cookie 中的 SUB 字段包含用户信息
-        uid = ""
-        for key in ("uid", "XSRF_TOKEN", "SUB"):
-            if key in cookies and cookies[key]:
-                # SUB 格式: xxx%1234567890 其中数字部分是 uid
-                if key == "SUB":
-                    match = re.search(r'(\d{6,})', cookies[key])
-                    if match:
-                        uid = match.group(1)
-                break
-
-        # 尝试通过 API 获取完整信息
-        if not uid:
+        """获取当前登录用户信息"""
+        try:
+            return self._fetch_login_user(force=False)
+        except Exception:
             return None
 
-        # 尝试获取昵称
+    def test_account(self) -> dict:
+        """测试当前微博账号 Cookie 可用性：同时验证 weibo.com 登录态与 PC Ajax 接口"""
+        cookies = self._load_cookies()
+        if not cookies:
+            return {"ok": False, "error": "未配置 Cookie，请从网页版 weibo.com 复制完整 Cookie"}
         try:
-            profile = self.get_profile(uid)
-            if profile:
-                return {
-                    "uid": profile.uid,
-                    "nickname": profile.nickname,
-                    "avatarUrl": profile.avatar_url,
-                }
-        except Exception:
-            pass
-        return {"uid": uid, "nickname": "", "avatarUrl": ""}
+            user = self._fetch_login_user(force=True)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if not user:
+            return {
+                "ok": False,
+                "error": "登录态已失效或 Cookie 无效，请从 PC 网页版 weibo.com 复制完整 Cookie",
+            }
+        try:
+            self._pc_ajax_get("/ajax/profile/info", {"uid": user["uid"]})
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "login_user": user}
 
     # ==================== 用户搜索 ====================
 
@@ -288,17 +370,16 @@ class WeiboAdapter(BasePlatformAdapter):
     # ==================== 用户资料 ====================
 
     def get_profile(self, uid: str) -> Optional[PlatformProfile]:
-        """获取用户资料（移动端 API；接口错误上抛，用户不存在返回 None）"""
+        """获取用户资料（weibo.com PC ajax；接口错误上抛，用户不存在返回 None）"""
         uid = str(uid).strip()
         if not uid:
             return None
 
-        data = self._mobile_get({"type": "uid", "value": uid})
-        user_info = data.get("userInfo", {})
+        resp = self._pc_ajax_get("/ajax/profile/info", {"uid": uid})
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+        user_info = data.get("user") if isinstance(data.get("user"), dict) else {}
         if not user_info:
             return None
-
-        tab_info = data.get("tabs", {})
 
         # 解析性别
         gender = 0
@@ -307,45 +388,41 @@ class WeiboAdapter(BasePlatformAdapter):
         elif user_info.get("gender") == "f":
             gender = 2
 
-        # 提取关注/粉丝/微博数
-        follows = tab_info.get("follow", {})
-        fans = tab_info.get("fans", {})
-
-        containerid = data.get("tabsInfo", {}).get("containerid", "")
-        if containerid:
-            self._container_cache[uid] = containerid
-
+        verified_reason = str(user_info.get("verified_reason") or "").strip()
         return PlatformProfile(
             platform="weibo",
-            uid=str(user_info.get("id", uid)),
+            uid=str(user_info.get("idstr") or user_info.get("id") or uid),
             nickname=user_info.get("screen_name", ""),
-            avatar_url=user_info.get("profile_image_url", ""),
-            background_url=user_info.get("cover_image_phone", ""),
-            signature=user_info.get("description", ""),
+            avatar_url=user_info.get("avatar_large") or user_info.get("profile_image_url") or "",
+            background_url=user_info.get("cover_image_phone") or "",
+            signature=user_info.get("description") or "",
             gender=gender,
             birthday="",
-            location=user_info.get("location", ""),
+            location=user_info.get("location") or "",
             join_time="",
             level=0,
-            is_vip=user_info.get("verified", False),
-            vip_label=user_info.get("verified_reason", ""),
+            is_vip=bool(user_info.get("verified", False)),
+            vip_label=verified_reason,
             extra={
-                "follow_count": follows.get("count", 0),
-                "fans_count": fans.get("count", 0),
-                "weibo_count": user_info.get("statuses_count", 0),
-                "favourite_count": user_info.get("favourites_count", 0),
-                "verified_reason": user_info.get("verified_reason", ""),
+                "follow_count": user_info.get("friends_count", 0) or 0,
+                "fans_count": user_info.get("followers_count", 0) or 0,
+                "weibo_count": user_info.get("statuses_count", 0) or 0,
+                "favourite_count": user_info.get("favourites_count", 0) or 0,
+                "verified_reason": verified_reason,
                 "verified_type": user_info.get("verified_type", -1),
                 "mbtype": user_info.get("mbtype", 0),
                 "mbrank": user_info.get("mbrank", 0),
-                "follow_status": user_info.get("follow_me", False),
-                "containerid": data.get("tabsInfo", {}).get("containerid", ""),
+                "follow_status": bool(user_info.get("follow_me", False)),
+                "avatar_hd": user_info.get("avatar_hd") or "",
             },
         )
 
     @staticmethod
     def _extract_mblog_media(mblog: dict) -> dict:
-        """从微博 mblog 提取九宫格原图列表与视频流 URL（优先标清/流畅 MP4）。"""
+        """从微博 mblog 提取九宫格原图列表与视频流 URL（优先标清/流畅 MP4）。
+
+        兼容 PC ajax（pic_infos / pic_ids / playback_list）与旧版移动端（pics）结构。
+        """
         pics: list[str] = []
         for p in mblog.get("pics") or []:
             if not isinstance(p, dict):
@@ -354,6 +431,26 @@ class WeiboAdapter(BasePlatformAdapter):
             u = str(large.get("url") or p.get("url") or "").strip()
             if u and u not in pics:
                 pics.append(u)
+
+        pic_infos = mblog.get("pic_infos")
+        if isinstance(pic_infos, dict) and pic_infos:
+            pic_ids = mblog.get("pic_ids") if isinstance(mblog.get("pic_ids"), list) else []
+            ordered_ids = [pid for pid in pic_ids if pid in pic_infos]
+            for pid in pic_infos:
+                if pid not in ordered_ids:
+                    ordered_ids.append(pid)
+            for pid in ordered_ids:
+                info = pic_infos.get(pid)
+                if not isinstance(info, dict):
+                    continue
+                chosen = ""
+                for size_key in ("original", "large", "largest", "mw2000", "bmiddle", "thumbnail"):
+                    variant = info.get(size_key)
+                    if isinstance(variant, dict) and variant.get("url"):
+                        chosen = str(variant["url"]).strip()
+                        break
+                if chosen and chosen not in pics:
+                    pics.append(chosen)
 
         video_urls: list[str] = []
         cover_url = pics[0] if pics else ""
@@ -382,6 +479,30 @@ class WeiboAdapter(BasePlatformAdapter):
                 if candidate and str(candidate).startswith(("http://", "https://")) and str(candidate) not in video_urls:
                     video_urls.append(str(candidate))
 
+            # PC ajax playback_list 兜底（按清晰度从低到高排序，优先轻量 MP4）
+            playback = media_info.get("playback_list")
+            if isinstance(playback, list):
+                pb_candidates: list[tuple[int, str]] = []
+                for entry in playback:
+                    if not isinstance(entry, dict):
+                        continue
+                    play_info = entry.get("play_info") if isinstance(entry.get("play_info"), dict) else {}
+                    meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
+                    url = str(play_info.get("url") or "").strip()
+                    mime = str(play_info.get("mime") or "").lower()
+                    if not url.startswith(("http://", "https://")):
+                        continue
+                    if mime and "mp4" not in mime:
+                        continue
+                    try:
+                        q_idx = int(meta.get("quality_index") or 9999)
+                    except (TypeError, ValueError):
+                        q_idx = 9999
+                    pb_candidates.append((q_idx, url))
+                for _q, url in sorted(pb_candidates, key=lambda x: x[0]):
+                    if url not in video_urls:
+                        video_urls.append(url)
+
         video_url = video_urls[0] if video_urls else ""
         media_type = "video" if video_url else ("images" if pics else "text")
         return {
@@ -394,95 +515,92 @@ class WeiboAdapter(BasePlatformAdapter):
 
     # ==================== 内容列表（微博列表） ====================
 
+    def _fetch_user_mblogs(self, uid: str, max_pages: int = 3) -> list[dict]:
+        """分页拉取用户微博列表（weibo.com/ajax/statuses/mymblog）"""
+        mblogs: list[dict] = []
+        seen_ids: set[str] = set()
+        since_id = ""
+
+        for page in range(1, max_pages + 1):
+            params: dict = {"uid": uid, "page": page, "feature": 0}
+            if since_id:
+                params["since_id"] = since_id
+            resp = self._pc_ajax_get("/ajax/statuses/mymblog", params)
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+            page_list = data.get("list") or []
+            if not page_list:
+                break
+
+            for mblog in page_list:
+                if not isinstance(mblog, dict):
+                    continue
+                item_id = str(mblog.get("idstr") or mblog.get("id") or mblog.get("mid") or "")
+                if item_id and item_id in seen_ids:
+                    continue
+                if item_id:
+                    seen_ids.add(item_id)
+                mblogs.append(mblog)
+
+            since_id = str(data.get("since_id") or "").strip()
+            if not since_id:
+                break
+
+        return mblogs
+
+    @staticmethod
+    def _clean_mblog_text(mblog: dict) -> tuple[str, str]:
+        """返回 (原始 HTML/富文本, 纯文本)"""
+        text_html = str(mblog.get("text") or "")
+        text_raw = str(mblog.get("text_raw") or "").strip()
+        text_plain = text_raw or re.sub(r"<[^>]+>", "", text_html).strip()
+        return text_html or text_plain, text_plain
+
     def get_content_lists(self, uid: str) -> list[ContentItem]:
         """获取用户的微博列表"""
         uid = str(uid).strip()
         if not uid:
             return []
 
-        items = []
+        mblogs = self._fetch_user_mblogs(uid, max_pages=3)
+        items: list[ContentItem] = []
 
-        # 先复用缓存的 containerid（避免与 get_profile 重复请求）
-        containerid = self._container_cache.get(uid, "")
-        if not containerid:
-            data = self._mobile_get({"type": "uid", "value": uid})
-            if not data:
-                return []
-            tabs_info = data.get("tabsInfo", {})
-            containerid = tabs_info.get("containerid", "") or f"107603{uid}"
-            self._container_cache[uid] = containerid
+        for mblog in mblogs:
+            created_at = self._parse_weibo_time(mblog.get("created_at", ""))
+            text_raw, text_plain = self._clean_mblog_text(mblog)
+            title = text_plain[:200]
 
-        # 翻页获取微博列表
-        for page in range(1, 4):  # 最多取 3 页
-            posts_data = self._mobile_get({
-                "type": "uid",
-                "value": uid,
-                "containerid": containerid,
-                "page": page,
-            })
-            if not posts_data:
-                break
+            item_id = str(mblog.get("idstr") or mblog.get("id") or mblog.get("mid") or "")
+            mblogid = str(mblog.get("mblogid") or "").strip()
+            user = mblog.get("user") if isinstance(mblog.get("user"), dict) else {}
+            author_uid = str(user.get("idstr") or user.get("id") or uid)
+            source = re.sub(r"<[^>]+>", "", str(mblog.get("source") or "")).strip()
+            media = self._extract_mblog_media(mblog)
 
-            cards = posts_data.get("cards", [])
-            if not cards:
-                break
-
-            for card in cards:
-                # 微博卡片格式：card_group 或 card_type 9
-                mblog = None
-                card_type = card.get("card_type", 0)
-
-                if card_type == 9:
-                    mblog = card.get("mblog", {})
-                elif card_type == 11 and card.get("card_group"):
-                    # 分组卡片
-                    for sub in card["card_group"]:
-                        if sub.get("card_type") == 9:
-                            mblog = sub.get("mblog", {})
-                            break
-
-                if not mblog:
-                    continue
-
-                # 解析微博时间
-                created_at = self._parse_weibo_time(mblog.get("created_at", ""))
-
-                # 提取文字内容（最多 200 字作为标题）
-                text_raw = mblog.get("text", "")
-                text_plain = re.sub(r'<[^>]+>', '', text_raw).strip()
-                title = text_plain[:200]
-
-                item_id = mblog.get("id", "") or mblog.get("mid", "")
-                media = self._extract_mblog_media(mblog)
-
-                items.append(ContentItem(
-                    item_id=str(item_id),
-                    title=title,
-                    cover_url=media["cover_url"],
-                    count=len(media["pics"]) if media["pics"] else 1,
-                    view_count=0,  # 旧版 API 可能不返回阅读数
-                    creator=mblog.get("user", {}).get("screen_name", ""),
-                    description=text_plain[:500],
-                    is_owner=True,
-                    create_time=str(created_at),
-                    extra={
-                        "reposts_count": mblog.get("reposts_count", 0),
-                        "comments_count": mblog.get("comments_count", 0),
-                        "attitudes_count": mblog.get("attitudes_count", 0),  # 点赞
-                        "text": text_raw,
-                        "pic_num": len(media["pics"]),
-                        "pics": media["pics"],
-                        "video_url": media["video_url"],
-                        "video_urls": media["video_urls"],
-                        "media_type": media["media_type"],
-                        "is_retweet": bool(mblog.get("retweeted_status")),
-                        "source": mblog.get("source", ""),
-                    },
-                ))
-
-            # 没有更多页
-            if not cards or len(cards) < 10:
-                break
+            items.append(ContentItem(
+                item_id=item_id,
+                title=title,
+                cover_url=media["cover_url"],
+                count=len(media["pics"]) if media["pics"] else 1,
+                view_count=0,
+                creator=user.get("screen_name", ""),
+                description=text_plain[:500],
+                is_owner=(author_uid == uid),
+                create_time=str(created_at),
+                url=f"{self.WEB_BASE}/{uid}/{mblogid}" if mblogid else "",
+                extra={
+                    "reposts_count": mblog.get("reposts_count", 0) or 0,
+                    "comments_count": mblog.get("comments_count", 0) or 0,
+                    "attitudes_count": mblog.get("attitudes_count", 0) or 0,
+                    "text": text_raw,
+                    "pic_num": len(media["pics"]),
+                    "pics": media["pics"],
+                    "video_url": media["video_url"],
+                    "video_urls": media["video_urls"],
+                    "media_type": media["media_type"],
+                    "is_retweet": bool(mblog.get("retweeted_status")),
+                    "source": source,
+                },
+            ))
 
         return items
 
@@ -509,145 +627,70 @@ class WeiboAdapter(BasePlatformAdapter):
     # ==================== 动态 ====================
 
     def get_events(self, uid: str, limit: int = 30) -> list[EventItem]:
-        """获取用户动态（微博发布）"""
+        """获取用户动态（微博发布/转发/赞）"""
         uid = str(uid).strip()
         if not uid:
             return []
 
-        events = []
+        max_pages = min(3, max(1, (limit + 19) // 20))
+        mblogs = self._fetch_user_mblogs(uid, max_pages=max_pages)
+        events: list[EventItem] = []
 
-        # 复用缓存的 containerid（避免重复请求）
-        containerid = self._container_cache.get(uid, "")
-        if not containerid:
-            data = self._mobile_get({"type": "uid", "value": uid})
-            containerid = data.get("tabsInfo", {}).get("containerid", f"107603{uid}") if data else f"107603{uid}"
-            self._container_cache[uid] = containerid
-
-        max_pages = min(3, max(1, limit // 10 + 1))
-
-        for page in range(1, max_pages + 1):
-            posts_data = self._mobile_get({
-                "type": "uid",
-                "value": uid,
-                "containerid": containerid,
-                "page": page,
-            })
-            if not posts_data:
+        for mblog in mblogs:
+            if len(events) >= limit:
                 break
 
-            cards = posts_data.get("cards", [])
-            if not cards:
-                break
+            user = mblog.get("user") if isinstance(mblog.get("user"), dict) else {}
+            author_uid = str(user.get("idstr") or user.get("id") or uid)
+            title_obj = mblog.get("title") if isinstance(mblog.get("title"), dict) else {}
 
-            for card in cards:
-                if len(events) >= limit:
-                    break
-
-                mblog = None
-                if card.get("card_type") == 9:
-                    mblog = card.get("mblog", {})
-                elif card.get("card_type") == 11 and card.get("card_group"):
-                    for sub in card["card_group"]:
-                        if sub.get("card_type") == 9:
-                            mblog = sub.get("mblog", {})
-                            break
-                if not mblog:
-                    continue
-
-                # 判断动态类型
+            # 判断动态类型
+            if mblog.get("retweeted_status"):
+                event_type = "转发微博"
+            elif author_uid != uid and "赞" in str(title_obj.get("text") or ""):
+                event_type = "赞了微博"
+            else:
                 event_type = "发布微博"
-                if mblog.get("retweeted_status"):
-                    event_type = "转发微博"
 
-                text_raw = mblog.get("text", "")
-                text_plain = re.sub(r'<[^>]+>', '', text_raw).strip()
+            _text_raw, text_plain = self._clean_mblog_text(mblog)
+            created_at = self._parse_weibo_time(mblog.get("created_at", ""))
 
-                created_at = self._parse_weibo_time(mblog.get("created_at", ""))
+            # 图片/视频媒体标题
+            media_title = ""
+            if isinstance(mblog.get("page_info"), dict):
+                page_info = mblog["page_info"]
+                media_title = page_info.get("page_title", "") or page_info.get("content2", "")
 
-                # 图片/视频媒体标题
-                media_title = ""
-                if mblog.get("page_info"):
-                    page_info = mblog["page_info"]
-                    media_title = page_info.get("page_title", "") or page_info.get("content2", "")
+            if not media_title and isinstance(mblog.get("retweeted_status"), dict):
+                orig = mblog["retweeted_status"]
+                _orig_raw, orig_text = self._clean_mblog_text(orig)
+                media_title = orig_text[:100]
 
-                if not media_title and mblog.get("retweeted_status"):
-                    orig = mblog["retweeted_status"]
-                    orig_text = re.sub(r'<[^>]+>', '', orig.get("text", "")).strip()
-                    media_title = orig_text[:100]
-
-                media = self._extract_mblog_media(mblog)
-                events.append(EventItem(
-                    event_id=str(mblog.get("id", "")),
-                    event_type=event_type,
-                    content=text_plain[:500],
-                    timestamp=created_at,
-                    media_title=media_title[:200],
-                    media_artist=mblog.get("user", {}).get("screen_name", ""),
-                    extra={
-                        "reposts_count": mblog.get("reposts_count", 0),
-                        "comments_count": mblog.get("comments_count", 0),
-                        "attitudes_count": mblog.get("attitudes_count", 0),
-                        "pic_count": len(media["pics"]),
-                        "pics": media["pics"],
-                        "video_url": media["video_url"],
-                        "media_type": media["media_type"],
-                        "is_retweet": bool(mblog.get("retweeted_status")),
-                    },
-                ))
+            mblogid = str(mblog.get("mblogid") or "").strip()
+            media = self._extract_mblog_media(mblog)
+            events.append(EventItem(
+                event_id=str(mblog.get("idstr") or mblog.get("id") or ""),
+                event_type=event_type,
+                content=text_plain[:500],
+                timestamp=created_at,
+                media_title=media_title[:200],
+                media_artist=user.get("screen_name", ""),
+                url=f"{self.WEB_BASE}/{uid}/{mblogid}" if mblogid else "",
+                extra={
+                    "reposts_count": mblog.get("reposts_count", 0) or 0,
+                    "comments_count": mblog.get("comments_count", 0) or 0,
+                    "attitudes_count": mblog.get("attitudes_count", 0) or 0,
+                    "pic_count": len(media["pics"]),
+                    "pics": media["pics"],
+                    "video_url": media["video_url"],
+                    "media_type": media["media_type"],
+                    "is_retweet": bool(mblog.get("retweeted_status")),
+                },
+            ))
 
         return events
 
     # ==================== 关注/粉丝 ====================
-
-    def _pc_ajax_get(self, path: str, params: dict) -> dict:
-        """
-        weibo.com PC 端 ajax 接口（需有效登录 Cookie）。
-        实现参考 nghuyong/WeiboSpider：m.weibo.cn 的 containerid 方案对 weibo.com
-        Cookie 做 wapsso 跨域校验会被拦（ok=-100 跳 passport），PC ajax 无此问题。
-        """
-        headers = {"Referer": "https://weibo.com/", "X-Requested-With": "XMLHttpRequest"}
-        last_error = "未知错误"
-        max_attempts = min(MAX_RETRIES, 2)
-        for attempt in range(max_attempts):
-            try:
-                self._rate_limit()
-                resp = self.session.get(
-                    f"https://weibo.com{path}",
-                    params=params,
-                    headers=headers,
-                    timeout=(5, REQUEST_TIMEOUT),
-                )
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                    except ValueError:
-                        # 非 JSON（多为 302 跟到 passport 登录页的 HTML）
-                        raise RuntimeError("[微博] 登录态已失效，请更新 Cookie（PC 接口返回非 JSON）")
-                    if isinstance(data, dict) and data.get("ok") == 1:
-                        self.last_api_error = None
-                        return data
-                    if isinstance(data, dict) and data.get("ok") == -100:
-                        raise RuntimeError("[微博] 登录态已失效，请更新 Cookie (ok=-100)")
-                    msg = (data or {}).get("message") or ""
-                    self.last_api_error = msg or f"接口返回异常 (ok={(data or {}).get('ok')})"
-                    print(f"[微博] PC 接口返回异常: {self.last_api_error}, path={path}")
-                    raise RuntimeError(f"[微博] {self.last_api_error}")
-                if resp.status_code in (401, 403, 418):
-                    raise RuntimeError(f"[微博] 登录态已失效或触发风控 (HTTP {resp.status_code})，请更新 Cookie")
-                last_error = f"HTTP {resp.status_code}"
-                print(f"[微博] HTTP {resp.status_code} (attempt {attempt+1}), path={path}")
-                if attempt < max_attempts - 1:
-                    time.sleep(1.5 + attempt * 0.5)
-                    self._last_request_at = time.time()
-            except RuntimeError:
-                raise
-            except (requests.RequestException, ValueError) as e:
-                last_error = str(e)
-                print(f"[微博] 请求失败 (attempt {attempt+1}): {e}")
-                if attempt < max_attempts - 1:
-                    time.sleep(1.5 + attempt)
-                    self._last_request_at = time.time()
-        raise RuntimeError(f"[微博] 请求失败: {last_error}")
 
     def _social_page(
         self, uid: str, relate: str, limit: int, skip: int

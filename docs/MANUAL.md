@@ -11,7 +11,7 @@
 | 哔哩哔哩 | `bilibili` | ✅ | 投稿 | ❌ | ✅ | ✅ | web 接口自写 | 无 |
 | 抖音 | `douyin` | ✅ | 作品 | ❌ | ✅ | ✅ | fork 移植（纯 API） | 原仓库 [cv-cat/DouYin_Spider](https://github.com/cv-cat/DouYin_Spider) **有 bug 不可用**；修复版：作者 fork [chenglei6-arch/DouYin_Spider](https://github.com/chenglei6-arch/DouYin_Spider) |
 | QQ音乐 | `qqmusic` | ✅ | 歌单 | ❌ | ✅ | ✅ | 自写（SSR + fcg 网关） | [jsososo/QQMusicApi](https://github.com/jsososo/QQMusicApi)（仅接口文档） |
-| 微博 | `weibo` | ✅ | 微博 | ❌ | ✅ | ✅ | m.weibo.cn + PC ajax | [nghuyong/WeiboSpider](https://github.com/nghuyong/WeiboSpider)（请求构造参考） |
+| 微博 | `weibo` | ✅ | 微博 | ❌ | ✅ | ✅ | PC ajax（`weibo.com`） + 搜索页 | [nghuyong/WeiboSpider](https://github.com/nghuyong/WeiboSpider)（请求构造参考） |
 | 原神 | `genshin` | ✅ | 角色展柜 | ❌ | ❌ | ❌ | enka.network + 米游社绑定 | [Womsxd/YuanShen_User_Info](https://github.com/Womsxd/YuanShen_User_Info)（设计参考） |
 | 小红书 | `xhs` | ✅ | 笔记 | ❌ | ✅ | ❌ | PC 签名栈移植 | [cv-cat/Spider_XHS](https://github.com/cv-cat/Spider_XHS) |
 | GitHub | `github` | ✅ | 仓库 + Star | ❌ | ✅ | ✅ | GitHub REST API v3 自写 | 无 |
@@ -75,10 +75,9 @@ refresh_user_info / check_alive / get_login_user`。
 
 ### 微博（weibo）
 
-- 主力 `m.weibo.cn` 移动端 API；关注/粉丝走 `weibo.com` PC ajax
-  （m 端 containerid 方案对 PC Cookie 做 wapsso 跨域校验会被拦）。
-- 登录失效（ok=-100 + passport 重定向）直接 `raise`，不做 SSR 兜底（投机性实现已删）。
-- Cookie 的 `SUB` 字段含 uid（正则提取数字部分），用于 `get_login_user`。
+- 全量统一走 `weibo.com` PC ajax（`/ajax/profile/info`、`/ajax/statuses/mymblog`、`/ajax/friendships/friends`）与 `s.weibo.com/user` 搜索页；不再使用 `m.weibo.cn`（m 端会对 PC Cookie 做 wapsso 跨域校验拦截并返回 `ok=-100`）。
+- 需使用 PC 网页版 `weibo.com` 登录 Cookie；登录态失效（302 跳转 `passport`/`login.php` 或 `ok=-100`）直接 `raise RuntimeError`。
+- `check_alive` 与 `get_login_user` 通过访问 `weibo.com/` 解析 `window.$CONFIG.user` 获取当前登录账号信息。
 
 ### 原神（genshin）
 
