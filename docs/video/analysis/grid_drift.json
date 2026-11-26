@@ -1,0 +1,40 @@
+{
+  "source_file": "house-vibez.mp3",
+  "candidates": {
+    "0.5x": {
+      "multiplier": 2.0,
+      "bpm": 61.001,
+      "T": 0.983591,
+      "n_beats_checked": 58,
+      "match_rate": 0.9828,
+      "mean_abs_ms": 10.58,
+      "max_abs_ms": 244.83,
+      "drift_ms": 16.69,
+      "first_active_beat_dist_ms": 6.02
+    },
+    "1x": {
+      "multiplier": 1.0,
+      "bpm": 122.0019,
+      "T": 0.491795,
+      "n_beats_checked": 116,
+      "match_rate": 0.9828,
+      "mean_abs_ms": 9.95,
+      "max_abs_ms": 244.83,
+      "drift_ms": 12.0,
+      "first_active_beat_dist_ms": 6.02
+    },
+    "2x": {
+      "multiplier": 0.5,
+      "bpm": 244.0039,
+      "T": 0.245898,
+      "n_beats_checked": 232,
+      "match_rate": 0.944,
+      "mean_abs_ms": 17.93,
+      "max_abs_ms": 249.47,
+      "drift_ms": 14.63,
+      "first_active_beat_dist_ms": 6.02
+    }
+  },
+  "winner": "1x",
+  "reason": "1x grid (122.0019 BPM) achieves match_rate=0.9828 (>=0.98) and mean_abs_ms=9.95ms (<10ms) with authentic 4-on-the-floor house quarter-note kicks."
+}

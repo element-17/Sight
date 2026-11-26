@@ -1,0 +1,21 @@
+{
+  "provider": "freesound",
+  "query": "soft pop tap",
+  "license_policy": "cc0",
+  "ordering": "relevance; popularity is supporting evidence only",
+  "results": [
+    {
+      "id": "fs:878237",
+      "title": "UI Click Soft Tap",
+      "author": "Qvantor",
+      "duration_seconds": 0.201958,
+      "preview_url": "https://cdn.freesound.org/previews/878/878237_19512113-hq.mp3",
+      "downloads": 54,
+      "page_url": "https://freesound.org/people/Qvantor/sounds/878237/",
+      "license_label": "Creative Commons 0",
+      "description": "Soft, rounded tap with a little body, for buttons, list items and taps in apps and games. Open its preset in Chisper, a free browser synth, and tweak it to your needs: https://chisper.qvantor.org/?preset=c416cebf-2614-490d-a61a-c1cf50f3ce07",
+      "rating": null,
+      "rating_count": null
+    }
+  ]
+}

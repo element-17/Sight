@@ -595,6 +595,23 @@ export async function installMockApi(page: Page) {
           };
           agentSessions = [paused, ...agentSessions];
           data = paused;
+        } else if (body.focus === "simulate-failed-checkpoint") {
+          const failed: AgentSessionDetail = {
+            ...sampleDoneSession(
+              id,
+              body.title || "失败断点 · 人物侧写",
+              body.uids || { github: "100" },
+            ),
+            status: "failed",
+            error: "Connection error. — [SSL: UNEXPECTED_EOF_WHILE_READING]",
+            report_markdown: "",
+            has_report: false,
+            running: false,
+            can_resume: true,
+            resume_nodes: ["investigator"],
+          };
+          agentSessions = [failed, ...agentSessions];
+          data = failed;
         } else {
           const done = sampleDoneSession(
             id,
@@ -624,6 +641,16 @@ export async function installMockApi(page: Page) {
       );
       agentSessions = agentSessions.map((s) => (s.id === sid ? resumed : s));
       data = resumed;
+    } else if (/^\/agent\/sessions\/[^/]+\/continue$/.test(path)) {
+      const sid = path.split("/")[3];
+      const existing = agentSessions.find((s) => s.id === sid);
+      const continued = sampleDoneSession(
+        sid,
+        existing?.title || "断点续跑 · 人物侧写",
+        existing?.uids || { github: "100" },
+      );
+      agentSessions = agentSessions.map((s) => (s.id === sid ? continued : s));
+      data = continued;
     } else if (/^\/agent\/sessions\/[^/]+\/chat$/.test(path)) {
       const sid = path.split("/")[3];
       agentSessions = agentSessions.map((s) =>

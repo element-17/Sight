@@ -417,6 +417,29 @@ export default function ViewAgent() {
     }
   }
 
+  async function handleContinueFromCheckpoint() {
+    if (!session) return;
+    setStreamReport("");
+    setStreamError("");
+    lastSeqRef.current = 0;
+    try {
+      const updated = await api.post<AgentSessionDetail>(
+        `/agent/sessions/${session.id}/continue`,
+      );
+      const activeRun = Boolean(updated.running ?? updated.status === "running");
+      setSession({ ...updated, running: activeRun });
+      setSideTab("trace");
+      setLiveStage(
+        activeRun
+          ? "正在从 LangGraph 失败断点继续执行（跳过已完成阶段）…"
+          : "",
+      );
+      void loadAgentSessions();
+    } catch (e) {
+      setStreamError(errorMessage(e));
+    }
+  }
+
   async function handleCancel() {
     if (!session) return;
     try {
@@ -834,14 +857,31 @@ export default function ViewAgent() {
                   中止
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => void handleRerun()}
-                >
-                  <Icon name="refresh" size={12} />
-                  重新生成
-                </button>
+                <>
+                  {session.can_resume ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      title={
+                        session.resume_nodes?.length
+                          ? `跳过已完成阶段，直接从 ${session.resume_nodes.join(", ")} 节点继续`
+                          : "跳过已完成阶段，从 LangGraph 失败断点继续"
+                      }
+                      onClick={() => void handleContinueFromCheckpoint()}
+                    >
+                      <Icon name="sparkles" size={12} />
+                      从断点继续
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => void handleRerun()}
+                  >
+                    <Icon name="refresh" size={12} />
+                    重新生成
+                  </button>
+                </>
               )}
               {session.report_markdown ? (
                 <button
@@ -1063,8 +1103,22 @@ export default function ViewAgent() {
                     <div>
                       {session.status === "waiting_confirm"
                         ? "请在上方勾选确认目标账号，系统会自动从断点继续推理。"
-                        : "点击右上角「重新生成」即可再次运行工作流。"}
+                        : session.status === "failed" && session.can_resume
+                          ? `已通过 LangGraph 保留前面完成的基线数据与证据（待续跑节点：${(session.resume_nodes || []).join(", ")}）。修复网络或模型配置后，点击「从断点继续」即可直接续跑，无需重新抓取。`
+                          : "点击右上角「重新生成」即可再次运行工作流。"}
                     </div>
+                    {session.status === "failed" && session.can_resume ? (
+                      <div style={{ marginTop: 12 }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={() => void handleContinueFromCheckpoint()}
+                        >
+                          <Icon name="sparkles" size={14} />
+                          从断点继续（跳过已完成阶段）
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </section>

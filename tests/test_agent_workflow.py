@@ -583,19 +583,36 @@ class LangGraphWorkflowTests(unittest.TestCase):
             {"platform": "github", "uid": "faildev", "nickname": "FailDev", "location": "Beijing"},
         )
 
-        class _FailingLLM:
+        class _SwitchableLLM:
+            def __init__(self):
+                self.should_fail = True
+                self.ok_responses = [
+                    AIMessage(content="断点续跑侦查完成，证据充足。"),
+                    AIMessage(
+                        content=(
+                            "# 人物形象侧写：FailDev\n\n"
+                            "常驻北京的开源开发者 [高置信][E1]。\n\n"
+                            '```json:profile_meta\n{"headline":"断点续跑恢复的开发者画像","tags":["开源"],'
+                            '"confidence_overall":"high","dimensions":[],"blind_spots":[]}\n```'
+                        )
+                    ),
+                ]
+
             def bind_tools(self, tools):
                 return self
 
             def invoke(self, messages):
-                root = OSError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
-                outer = RuntimeError("Connection error.")
-                raise outer from root
+                if self.should_fail:
+                    root = OSError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+                    outer = RuntimeError("Connection error.")
+                    raise outer from root
+                return self.ok_responses.pop(0)
 
+        switch_llm = _SwitchableLLM()
         runner = AgentRunManager(
             store=self.store,
             checkpoint_db_path=self.ckpt_path,
-            llm_factory=lambda: _FailingLLM(),
+            llm_factory=lambda: switch_llm,
         )
         self.addCleanup(runner.close)
 
@@ -611,14 +628,33 @@ class LangGraphWorkflowTests(unittest.TestCase):
 
             session = runner.create_session(title="失败保留基线测试", uids={"github": "faildev"})
             failed = self._wait_idle(runner, session["id"])
+            baseline_fetch_calls = adapter.get_content_lists.call_count
 
         self.assertEqual(failed["status"], "failed")
         self.assertIn("UNEXPECTED_EOF_WHILE_READING", failed["error"])
         self.assertIn("127.0.0.1:7897", failed["error"])
+        self.assertTrue(failed["can_resume"])
+        self.assertEqual(failed["resume_nodes"], ["investigator"])
         # 基线阶段采集到的证据和轨迹被保留在失败档案中
         self.assertGreaterEqual(len(failed["evidence"]), 1)
         self.assertTrue(any(t.get("stage") == "collect_baseline" for t in failed["trace"]))
         self.assertTrue(any(t.get("stage") == "error" for t in failed["trace"]))
+
+        # 网络/代理恢复后调用 continue_session (LangGraph stream(None, config)) 直接续跑，不再重复抓取基线
+        switch_llm.should_fail = False
+        with patch("app.services.platform_fetcher.get_adapter") as mock_get_adapter_2:
+            runner.continue_session(session["id"])
+            resumed_done = self._wait_idle(runner, session["id"])
+            self.assertEqual(mock_get_adapter_2.call_count, 0)
+
+        self.assertEqual(baseline_fetch_calls, 1)
+        self.assertEqual(resumed_done["status"], "done")
+        self.assertFalse(resumed_done["can_resume"])
+        self.assertIn("FailDev", resumed_done["report_markdown"])
+        self.assertEqual(
+            resumed_done["structured"]["profile_meta"]["headline"],
+            "断点续跑恢复的开发者画像",
+        )
 
 
 class AgentRestRoutesTests(unittest.TestCase):
@@ -712,6 +748,10 @@ class AgentRestRoutesTests(unittest.TestCase):
         res_events = self.client.get(f"/api/agent/sessions/{sid}/events?after=0")
         self.assertEqual(res_events.status_code, 200)
         self.assertEqual(res_events.json["data"]["entries"], [])
+
+        # 未启动过没有可续跑断点时 /continue 返回明确 400
+        res_cont = self.client.post(f"/api/agent/sessions/{sid}/continue")
+        self.assertEqual(res_cont.status_code, 400)
 
         res_del = self.client.delete(f"/api/agent/sessions/{sid}")
         self.assertEqual(res_del.status_code, 200)

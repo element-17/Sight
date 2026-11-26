@@ -1,0 +1,34 @@
+{
+  "provider": "freesound",
+  "query": "short soft whoosh",
+  "license_policy": "cc0",
+  "ordering": "relevance; popularity is supporting evidence only",
+  "results": [
+    {
+      "id": "fs:878248",
+      "title": "UI Hover Micro Swish",
+      "author": "Qvantor",
+      "duration_seconds": 0.215938,
+      "preview_url": "https://cdn.freesound.org/previews/878/878248_19512113-hq.mp3",
+      "downloads": 123,
+      "page_url": "https://freesound.org/people/Qvantor/sounds/878248/",
+      "license_label": "Creative Commons 0",
+      "description": "Very short airy swish moving a little from left to right, for hovers, swipes and cards. Open its preset in Chisper, a free browser synth, and tweak it to your needs: https://chisper.qvantor.org/?preset=aca36d0d-f69c-454d-8b71-16704878c201",
+      "rating": 4.7,
+      "rating_count": 3
+    },
+    {
+      "id": "fs:449645",
+      "title": "Transition,action,jump,pitch-shift,short,shimmer,whoosh,positive,soft.wav",
+      "author": "CJDeets",
+      "duration_seconds": 1.32238,
+      "preview_url": "https://cdn.freesound.org/previews/449/449645_8074450-hq.mp3",
+      "downloads": 583,
+      "page_url": "https://freesound.org/people/CJDeets/sounds/449645/",
+      "license_label": "Creative Commons 0",
+      "description": "I created this sound to create an anime like effect with a shimmering like quality. I used FL Studio and some pith and reverb plugins to get this effect.",
+      "rating": 4.1,
+      "rating_count": 9
+    }
+  ]
+}

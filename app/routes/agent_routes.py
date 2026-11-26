@@ -160,6 +160,19 @@ def agent_session_resume(session_id):
         return _error(str(e))
 
 
+@bp.route("/agent/sessions/<session_id>/continue", methods=["POST"])
+def agent_session_continue(session_id):
+    """从 LangGraph SqliteSaver 失败断点原地续跑（stream(None, config)），跳过已完成阶段"""
+    try:
+        return _result(get_agent_runner().continue_session(session_id))
+    except KeyError:
+        return _error("侧写档案不存在", http_status=404)
+    except (ValueError, RuntimeError) as e:
+        return _error(str(e), http_status=400)
+    except Exception as e:
+        return _error(str(e))
+
+
 @bp.route("/agent/sessions/<session_id>/chat", methods=["POST"])
 def agent_session_chat(session_id):
     """在同一 LangGraph thread_id 上进行多轮追问"""

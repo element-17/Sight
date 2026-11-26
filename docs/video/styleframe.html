@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Sight Promo Styleframe</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #111318;
+    font-family: 'Microsoft YaHei', 'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    align-items: center;
+  }
+  .frame {
+    width: 1920px;
+    height: 1080px;
+    position: relative;
+    overflow: hidden;
+    border-radius: 12px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+  }
+  .label {
+    position: absolute;
+    top: 24px;
+    left: 28px;
+    z-index: 20;
+    font: 700 22px Consolas, monospace;
+    color: #3565e0;
+    background: rgba(255,255,255,0.9);
+    border: 1px solid #d5d8dd;
+    padding: 6px 14px;
+    border-radius: 8px;
+  }
+  /* Frame 1: Porcelain Opening + Brand Mask */
+  .f1 {
+    background: linear-gradient(180deg, #f8f9fb 0%, #f1f4f9 55%, #e7edf6 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .f1-kicker {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+    font-size: 36px;
+    font-weight: 700;
+    color: #1c1f23;
+    letter-spacing: 0.04em;
+  }
+  .eye-badge {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: #3565e0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 10px 26px rgba(53,101,224,0.34);
+  }
+  .f1-mask-word {
+    font-size: 400px;
+    font-weight: 900;
+    letter-spacing: -16px;
+    line-height: 0.94;
+    background: radial-gradient(circle at 38% 45%, #3565e0 0%, #0d1b3e 45%, #070d1f 100%);
+    -webkit-background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 26px 32px rgba(12, 26, 58, 0.22));
+  }
+  .f1-sub {
+    margin-top: 32px;
+    font-size: 44px;
+    font-weight: 600;
+    color: #4b5563;
+  }
+  .f1-sub strong { color: #1c1f23; font-weight: 800; }
+  .f1-dots {
+    display: flex;
+    gap: 16px;
+    margin-top: 28px;
+  }
+  .dot {
+    width: 14px; height: 14px; border-radius: 50%;
+  }
+
+  /* Frame 2: Light Workbench + Scanline + 56px Caption Bar */
+  .f2 {
+    background: linear-gradient(180deg, #f6f7f9 0%, #edf1f7 100%);
+  }
+  .f2-status {
+    position: absolute;
+    left: 180px; top: 82px; width: 1560px; height: 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    font: 700 30px Consolas, monospace;
+    color: #1c1f23;
+  }
+  .f2-win {
+    position: absolute;
+    left: 180px; top: 156px; width: 1560px; height: 760px;
+    background: #ffffff;
+    border: 1px solid #d5d8dd;
+    border-radius: 20px;
+    box-shadow: 0 28px 70px rgba(16, 24, 40, 0.12);
+    overflow: hidden;
+  }
+  .f2-scanline {
+    position: absolute;
+    left: 0; right: 0; top: 380px; height: 3px;
+    background: #1d4ed8;
+    box-shadow: 0 0 18px rgba(29,78,216,0.7);
+  }
+  .f2-scan-wash {
+    position: absolute;
+    left: 0; right: 0; top: 240px; height: 140px;
+    background: linear-gradient(180deg, rgba(29,78,216,0), rgba(29,78,216,0.14));
+  }
+  .f2-tag {
+    position: absolute;
+    left: 420px; top: 290px;
+    background: #1d4ed8; color: #fff;
+    font: 700 32px 'Microsoft YaHei', sans-serif;
+    padding: 10px 20px; border-radius: 10px;
+    box-shadow: 0 10px 24px rgba(12, 26, 90, 0.35);
+  }
+  .caption-pill {
+    position: absolute;
+    left: 50%;
+    bottom: 44px;
+    transform: translateX(-50%);
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 16px;
+    padding: 14px 36px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    box-shadow: 0 12px 32px rgba(10, 18, 36, 0.3);
+    white-space: nowrap;
+  }
+  .caption-pill .sq {
+    width: 14px; height: 14px; border-radius: 3px; background: #3565e0; flex-shrink: 0;
+  }
+  .caption-pill span {
+    font-size: 56px;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.15;
+    letter-spacing: 0.01em;
+  }
+
+  /* Frame 3: Deep Slate Stage + Floating Document + Outro Lockup */
+  .f3 {
+    background: radial-gradient(ellipse 68% 60% at 50% 42%, #192b57 0%, #0b1222 65%, #060913 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+  }
+  .f3-lockup {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+  }
+  .f3-eye {
+    width: 128px; height: 128px; border-radius: 30px; background: #3565e0;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 18px 50px rgba(53,101,224,0.5);
+  }
+  .f3-word {
+    font-size: 136px; font-weight: 800; letter-spacing: -0.02em; color: #f8fafc;
+  }
+  .f3-rule {
+    width: 280px; height: 6px; border-radius: 3px; background: #3565e0; margin: 34px auto;
+  }
+  .f3-cta {
+    font-size: 40px; font-weight: 600; color: #e2e8f0; letter-spacing: 0.03em;
+  }
+  .f3-url {
+    margin-top: 18px;
+    font: 700 36px Consolas, monospace;
+    color: #60a5fa;
+  }
+  .f3-disc {
+    position: absolute; bottom: 32px; font-size: 24px; color: rgba(203,213,225,0.65);
+  }
+</style>
+</head>
+<body>
+  <div class="frame f1">
+    <div class="label">STYLEFRAME 01 · OPENING MASK · #F6F7F9 + #3565E0</div>
+    <div class="f1-kicker">
+      <div class="eye-badge">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M4.5 12s3-5.5 7.5-5.5S19.5 12 19.5 12s-3 5.5-7.5 5.5S4.5 12 4.5 12z"/><circle cx="12" cy="12" r="2.6" fill="#fff" stroke="none"/></svg>
+      </div>
+      <span>开源 · 8大公开平台图谱与 AI 侧写</span>
+    </div>
+    <div class="f1-mask-word">SIGHT</div>
+    <div class="f1-sub">从碎片公开信息，<strong>一键构建完整数字画像</strong></div>
+    <div class="f1-dots">
+      <div class="dot" style="background:#fb7299"></div>
+      <div class="dot" style="background:#fe2c55"></div>
+      <div class="dot" style="background:#ff2442"></div>
+      <div class="dot" style="background:#e6702e"></div>
+      <div class="dot" style="background:#24292f"></div>
+      <div class="dot" style="background:#e60026"></div>
+      <div class="dot" style="background:#31c27c"></div>
+      <div class="dot" style="background:#3565e0"></div>
+    </div>
+  </div>
+
+  <div class="frame f2">
+    <div class="label">STYLEFRAME 02 · WORKBENCH + SCANLINE + 56PX CAPTION</div>
+    <div class="f2-status">
+      <div>● GRAPH LOCKED &nbsp; <span style="color:#5c6470;font-weight:500">Sight · 社交关系图谱</span></div>
+      <div style="color:#1d4ed8">SIGNALS 05 / 05</div>
+    </div>
+    <div class="f2-win">
+      <div class="f2-scan-wash"></div>
+      <div class="f2-scanline"></div>
+      <div class="f2-tag">01 跨平台同名归并 · 8 平台实时对齐</div>
+    </div>
+    <div class="caption-pill">
+      <div class="sq"></div>
+      <span>ECharts 6 社交关系图谱，互关与同名自动归并</span>
+    </div>
+  </div>
+
+  <div class="frame f3">
+    <div class="label" style="background:rgba(15,23,42,0.85);color:#93c5fd;border-color:rgba(147,197,253,0.3)">STYLEFRAME 03 · DARK STAGE + OUTRO CTA (Q11 ≥36PX)</div>
+    <div class="f3-lockup">
+      <div class="f3-eye">
+        <svg width="82" height="82" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M4.5 12s3-5.5 7.5-5.5S19.5 12 19.5 12s-3 5.5-7.5 5.5S4.5 12 4.5 12z"/><circle cx="12" cy="12" r="2.6" fill="#fff" stroke="none"/></svg>
+      </div>
+      <div class="f3-word">Sight</div>
+    </div>
+    <div class="f3-rule"></div>
+    <div class="f3-cta">开源免费 · Win / Mac / Linux 解压即用</div>
+    <div class="f3-url">github.com/element-17/Sight</div>
+    <div class="f3-disc">演示数据均为虚构 · 仅用于公开数据工程与图谱可视化研究学习</div>
+  </div>
+</body>
+</html>

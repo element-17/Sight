@@ -88,7 +88,8 @@ REST 层是唯一把异常转 JSON 的边界，失败返回 `{"code": -1, "messa
 | GET | `/agent/sessions/<id>` | 获取单条档案完整数据（Markdown 报告、结构化元信息、24h 作息与社交拓扑统计、图文/视频证据账本、盲区、执行轨迹、追问记录） |
 | DELETE | `/agent/sessions/<id>` | 删除侧写档案及其 LangGraph Checkpoint |
 | POST | `/agent/sessions/<id>/run` | 对已有档案重新执行一次侧写工作流 |
-| POST | `/agent/sessions/<id>/resume` | 提交勾选后的 `{"confirmed_accounts": {platform: uid}}`，通过 LangGraph `Command(resume=...)` 从断点恢复执行 |
+| POST | `/agent/sessions/<id>/resume` | 提交勾选后的 `{"confirmed_accounts": {platform: uid}}`，通过 LangGraph `Command(resume=...)` 从人工确认断点恢复执行 |
+| POST | `/agent/sessions/<id>/continue` | 从 LangGraph `SqliteSaver` 失败断点原地续跑（`stream(None, config)`），跳过已完成的基线采集/工具节点 |
 | POST | `/agent/sessions/<id>/chat` | 在同一 LangGraph `thread_id` 上发送多轮追问（`{"message": "..."}`），复用证据账本并按需补调工具（含 `inspect_images` / `inspect_video`） |
 | POST | `/agent/sessions/<id>/cancel` | 协作式中止正在执行的推理任务 |
 | GET | `/agent/sessions/<id>/events?after=seq` | 按游标增量拉取执行事件（SSE 降级轮询） |

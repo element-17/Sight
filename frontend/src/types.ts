@@ -596,6 +596,8 @@ export interface AgentSessionDetail extends AgentSessionMeta {
   trace: AgentTraceItem[];
   chat_history: AgentChatMessage[];
   last_seq?: number;
+  can_resume?: boolean;
+  resume_nodes?: string[];
 }
 export interface AgentStreamEvent {
   seq: number;

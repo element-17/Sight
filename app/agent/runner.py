@@ -255,6 +255,29 @@ class AgentRunManager:
             session = self.get_session_detail(session_id) or session
         return session
 
+    def _inspect_resumable_checkpoint(self, session_id: str) -> tuple[list[str], str]:
+        """检查该 thread_id 的 SqliteSaver 是否存在可续跑的失败/未完成节点（排除人工确认 interrupt）。"""
+        try:
+            checkpointer = self._get_checkpointer()
+            compiled = compile_profile_graph(
+                self.store,
+                checkpointer=checkpointer,
+                llm_factory=self._llm_factory,
+            )
+            snap = compiled.get_state({"configurable": {"thread_id": session_id}})
+            next_nodes = [str(n) for n in (getattr(snap, "next", ()) or ()) if n]
+            if not next_nodes:
+                return [], "profile"
+            # 若挂在人工确认 interrupt() 上，应走 /resume 提交 confirmed_accounts 而非 /continue
+            for task in getattr(snap, "tasks", ()) or ():
+                if getattr(task, "interrupts", None):
+                    return [], "profile"
+            values = dict(getattr(snap, "values", {}) or {})
+            mode = "followup" if values.get("mode") == "followup" else "profile"
+            return next_nodes, mode
+        except Exception:
+            return [], "profile"
+
     def get_session_detail(self, session_id: str) -> Optional[dict[str, Any]]:
         profile = self.store.get_agent_profile(session_id)
         if not profile:
@@ -262,6 +285,13 @@ class AgentRunManager:
         ch = self._channel(session_id)
         profile["running"] = ch.running
         profile["last_seq"] = ch.seq
+        if not ch.running and profile.get("status") in ("failed", "cancelled"):
+            next_nodes, _ = self._inspect_resumable_checkpoint(session_id)
+            profile["can_resume"] = bool(next_nodes)
+            profile["resume_nodes"] = next_nodes
+        else:
+            profile["can_resume"] = False
+            profile["resume_nodes"] = []
         return profile
 
     def list_sessions(self) -> list[dict[str, Any]]:
@@ -394,6 +424,33 @@ class AgentRunManager:
         )
         return self.get_session_detail(session_id) or profile
 
+    def continue_session(self, session_id: str) -> dict[str, Any]:
+        """
+        使用 LangGraph 原生断点续跑（`graph.stream(None, config)`）：
+        跳过已完成的基线采集/工具节点，直接从上次失败的节点原地重试。
+        """
+        profile = self.store.get_agent_profile(session_id)
+        if not profile:
+            raise KeyError("侧写档案不存在")
+        ch = self._channel(session_id)
+        if ch.running:
+            raise RuntimeError("该侧写档案正在运行中")
+
+        next_nodes, mode = self._inspect_resumable_checkpoint(session_id)
+        if not next_nodes:
+            raise ValueError("当前档案没有可续跑的 LangGraph 失败断点，请点击「重新生成」从头执行")
+
+        model_name = self._ensure_llm_ready()
+        self.store.update_agent_profile(
+            session_id,
+            status="running",
+            model=model_name,
+            error="",
+        )
+        self._log(f"会话 {session_id} 从 LangGraph 断点继续执行（待续跑节点: {', '.join(next_nodes)}）")
+        self._launch_worker(session_id, None, kind=mode)
+        return self.get_session_detail(session_id) or profile
+
     def send_followup(self, session_id: str, message: str) -> dict[str, Any]:
         profile = self.store.get_agent_profile(session_id)
         if not profile:
@@ -437,12 +494,13 @@ class AgentRunManager:
         ch = self._channel(session_id)
         ch.cancel_event.clear()
         ch.running = True
-        ch.publish(
-            "run_start",
-            kind=kind,
-            label="开始执行人物侧写工作流…" if kind == "profile" else "正在处理追问…",
+        start_label = (
+            "正在从 LangGraph 失败断点继续执行（跳过已完成阶段）…"
+            if graph_input is None
+            else ("开始执行人物侧写工作流…" if kind == "profile" else "正在处理追问…")
         )
-        self._log(f"会话 {session_id} 启动 ({kind})")
+        ch.publish("run_start", kind=kind, label=start_label)
+        self._log(f"会话 {session_id} 启动 ({kind}{', resume' if graph_input is None else ''})")
 
         def _worker():
             try:
@@ -470,6 +528,7 @@ class AgentRunManager:
         gaps = existing.get("gaps") or []
         trace = list(existing.get("trace") or [])
 
+        next_nodes: list[str] = []
         try:
             checkpointer = self._get_checkpointer()
             compiled = compile_profile_graph(
@@ -478,6 +537,7 @@ class AgentRunManager:
                 llm_factory=self._llm_factory,
             )
             snap = compiled.get_state({"configurable": {"thread_id": session_id}})
+            next_nodes = [str(n) for n in (getattr(snap, "next", ()) or ()) if n]
             values = dict(getattr(snap, "values", {}) or {})
             if values.get("baseline_stats"):
                 structured["baseline_stats"] = values["baseline_stats"]
@@ -501,7 +561,7 @@ class AgentRunManager:
                 "status": "error",
             }
         )
-        return self.store.update_agent_profile(
+        updated = self.store.update_agent_profile(
             session_id,
             status="failed",
             error=err_msg,
@@ -510,6 +570,11 @@ class AgentRunManager:
             gaps=gaps,
             trace=trace[-200:],
         )
+        if updated is not None:
+            updated["running"] = False
+            updated["can_resume"] = bool(next_nodes)
+            updated["resume_nodes"] = next_nodes
+        return updated
 
     def _execute_stream(
         self,

@@ -77,5 +77,17 @@ test("AI profiling workspace: LLM config, bound-account profiling, evidence jump
     page.getByRole("button", { name: "确认后 · 人物侧写", exact: true }),
   ).toBeVisible();
 
+  // 6. 失败后保留基线进度并支持 LangGraph「从断点继续」
+  await page.getByRole("button", { name: "新建侧写", exact: true }).click();
+  await page.getByLabel(/基于已绑定/).check();
+  await page.getByRole("button", { name: "导入当前面板 UIDs", exact: true }).click();
+  await page.getByLabel("调查关注重点（可选）").fill("simulate-failed-checkpoint");
+  await page.getByRole("button", { name: "开始生成侧写" }).click();
+
+  await expect(page.getByText(/UNEXPECTED_EOF_WHILE_READING/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "从断点继续", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "从断点继续", exact: true }).click();
+  await expect(page.getByText("常驻杭州的开源开发者", { exact: true })).toBeVisible();
+
   expect(errors).toEqual([]);
 });
